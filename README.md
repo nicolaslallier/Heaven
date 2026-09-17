@@ -95,10 +95,15 @@ renommage atomique : une interruption ne laisse jamais de fichier à moitié éc
 
 ## Développement
 
+Le `Makefile` crée l'environnement virtuel au premier appel ; `make help`
+liste toutes les cibles.
+
 ```bash
-pytest          # suite de tests
-ruff check .    # lint
-ruff format .   # formatage
+make install    # venv + installation éditable avec les dépendances de dev
+make test       # suite de tests
+make lint       # lint
+make format     # formatage
+make check      # ce que vérifie la CI : lint + formatage + tests
 ```
 
 ### Organisation du code
