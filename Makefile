@@ -76,6 +76,31 @@ verify: $(STAMP) ## Contrôle l'intégrité du dépôt
 prune: $(STAMP) ## Applique la rétention et supprime les objets orphelins
 	$(BIN)/heaven prune
 
+# --- Conteneur ---------------------------------------------------------------
+
+IMAGE ?= heaven-backup:latest
+
+.PHONY: docker-build
+docker-build: ## Construit l'image de l'appliance ($(IMAGE))
+	docker build -t $(IMAGE) .
+
+.PHONY: docker-up
+docker-up: ## Démarre la pile docker-compose (lire .env.example au préalable)
+	docker compose up -d --build
+
+.PHONY: docker-down
+docker-down: ## Arrête la pile docker-compose
+	docker compose down
+
+.PHONY: docker-logs
+docker-logs: ## Suit les journaux de l'appliance
+	docker compose logs -f heaven
+
+.PHONY: docker-config
+docker-config: ## Vérifie la syntaxe des piles compose et Portainer
+	docker compose --env-file .env.example config --quiet
+	docker compose -f deploy/portainer/stack.yml --env-file .env.example config --quiet
+
 # --- Distribution ------------------------------------------------------------
 
 .PHONY: build
