@@ -20,6 +20,7 @@ from pathlib import Path
 from . import engine
 from .config import ENV_PREFIX, Config
 from .errors import ConfigError, HeavenError
+from .repository import Repository
 
 DEFAULT_STATE_PATH = Path("/var/lib/heaven/state.json")
 DEFAULT_SCHEDULE = "02:30"
@@ -237,6 +238,7 @@ def serve(
     state = state_path if state_path is not None else default_state_path()
 
     emit(f"démarrage : planification « {schedule} », dépôt {config.repository}")
+    _prepare_repository(config, emit)
     cycles = 0
     last: CycleReport | None = None
     pending = now() if initial_backup else schedule.next_run(now())
@@ -263,6 +265,22 @@ def serve(
 
     emit("arrêt du service")
     return 0 if last is None or last.status == "ok" else 1
+
+
+def _prepare_repository(config: Config, emit: Logger) -> None:
+    """Crée le dépôt au démarrage plutôt qu'à la première échéance.
+
+    Deux raisons : un volume mal monté se voit tout de suite dans les journaux au
+    lieu d'attendre 02:30, et le dépôt existe avant l'écriture du fichier d'état —
+    sans quoi un état rangé dans le dépôt le rendrait « non vide », ce que
+    `Repository.initialize` refuse à raison.
+    """
+    try:
+        Repository.initialize(config.repository)
+        emit(f"dépôt prêt : {config.repository}")
+    except (HeavenError, OSError) as error:
+        # Pas fatal : le montage peut arriver en retard, chaque cycle réessaiera.
+        emit(f"ERREUR dépôt inutilisable : {error}")
 
 
 def _install_signal_handlers(log: Logger) -> threading.Event:

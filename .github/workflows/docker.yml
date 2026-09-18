@@ -70,18 +70,20 @@ jobs:
         run: |
           set -eux
           image="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
-          mkdir -p /tmp/essai/sources /tmp/essai/repository /tmp/essai/restauration
+          mkdir -p /tmp/essai/sources /tmp/essai/repository /tmp/essai/etat /tmp/essai/restauration
           echo bonjour > /tmp/essai/sources/a.txt
+          # Volumes disposés comme dans l'image : dépôt et état séparés, et
+          # aucune variable de configuration — ce sont les défauts qui sont éprouvés.
           docker run --rm \
-            -e HEAVEN_SOURCES=/sources -e HEAVEN_REPOSITORY=/repository \
-            -e HEAVEN_STATE=/repository/state.json \
             -v /tmp/essai/sources:/sources:ro \
             -v /tmp/essai/repository:/repository \
+            -v /tmp/essai/etat:/var/lib/heaven \
             "$image" serve --once --schedule 6h --verify-every 1
+          test -f /tmp/essai/repository/config.json
           docker run --rm -v /tmp/essai/repository:/repository "$image" \
             snapshots --repository /repository
-          docker run --rm -v /tmp/essai/repository:/repository "$image" \
-            health --state-file /repository/state.json
+          # La sonde de santé du conteneur, telle que HEALTHCHECK l'invoque.
+          docker run --rm -v /tmp/essai/etat:/var/lib/heaven "$image" health
           docker run --rm \
             -v /tmp/essai/repository:/repository \
             -v /tmp/essai/restauration:/restauration \

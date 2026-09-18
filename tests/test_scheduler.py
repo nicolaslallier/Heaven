@@ -209,3 +209,49 @@ def test_health_fails_on_a_failed_cycle(tmp_path: Path) -> None:
 def test_health_without_state_is_an_error(tmp_path: Path) -> None:
     with pytest.raises(HeavenError):
         health(tmp_path / "jamais-ecrit.json", grace=timedelta(hours=1))
+
+
+def test_serve_prepares_the_repository_before_writing_its_state(
+    config: Config, tmp_path: Path
+) -> None:
+    """Régression : un état rangé dans le dépôt rendait celui-ci « non vide ».
+
+    `Repository.initialize` refuse alors d'écrire dans un répertoire qui contient
+    déjà autre chose, et le service échouait dès son premier cycle.
+    """
+    state_path = config.repository / "state.json"
+    lines: list[str] = []
+
+    code = serve(
+        config,
+        parse_schedule("6h"),
+        state_path=state_path,
+        log=lines.append,
+        max_cycles=1,
+    )
+
+    assert code == 0
+    assert (config.repository / "config.json").is_file()
+    assert state_path.is_file()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["status"] == "ok"
+
+
+def test_serve_reports_an_unusable_repository_at_startup(tree: Path, tmp_path: Path) -> None:
+    """Un dépôt pointant sur des données existantes est signalé au démarrage."""
+    occupied = tmp_path / "pas-un-depot"
+    occupied.mkdir()
+    (occupied / "des-donnees.txt").write_text("déjà là\n", encoding="utf-8")
+    config = Config(sources=[tree], repository=occupied)
+    lines: list[str] = []
+
+    code = serve(
+        config,
+        parse_schedule("6h"),
+        state_path=tmp_path / "state.json",
+        log=lines.append,
+        max_cycles=1,
+    )
+
+    assert code == 1
+    assert any("dépôt inutilisable" in line for line in lines)
+    assert (occupied / "des-donnees.txt").read_text(encoding="utf-8") == "déjà là\n"

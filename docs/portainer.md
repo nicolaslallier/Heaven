@@ -60,6 +60,19 @@ plusieurs répertoires hôtes, ajouter les montages correspondants et les lister
 > montage NAS. Un dépôt posé au milieu des données sauvegardées disparaîtrait
 > avec elles.
 
+Heaven refuse d'écrire un dépôt dans un répertoire qui contient déjà autre
+chose — c'est ce qui l'empêche de se déverser au milieu de vos données. Deux
+conséquences pour `HEAVEN_REPOSITORY_PATH` :
+
+- pointez-le sur un **sous-répertoire** du montage (`/mnt/disque/heaven`), pas
+  sur la racine : un disque fraîchement formaté contient déjà `lost+found`, et
+  le dépôt serait refusé ;
+- ne rangez pas le fichier d'état dedans : il a son propre volume
+  (`/var/lib/heaven`), et c'est le défaut de l'image.
+
+Le message `le répertoire existe et n'est pas un dépôt Heaven` dans les
+journaux désigne exactement ce cas.
+
 ## 3. Vérifier que ça tourne
 
 Les journaux (*Containers* → `heaven` → *Logs*) montrent chaque cycle :
