@@ -1,0 +1,58 @@
+# Le runner GitHub Actions auto-hébergé qui déploie cette pile.
+#
+# Son propre projet compose, à côté de la pile « heaven » qu'il déploie et non
+# dedans : un redéploiement recrée tous les conteneurs de cette pile, et un
+# runner recréé en plein job est un job qui ne rend jamais son résultat.
+#
+# Un runner hébergé par GitHub ne peut pas faire ce travail : Portainer publie
+# son API sur le LAN et sur infra-net, sans ingress publique vers l'un ni
+# l'autre. Le runner doit être sur ce LAN.
+#
+# Piloté par « make runner-up » / -down / -logs. Voir docs/portainer.md,
+# section « Déployer depuis GitHub Actions », et sa note de sécurité avant
+# d'élargir qui peut fusionner sur main.
+name: heaven-runner
+
+services:
+  runner:
+    # Tag mouvant volontairement : GitHub retire côté serveur les anciennes
+    # versions de runner, et une empreinte épinglée aujourd'hui vieillit en un
+    # runner que le service refuse.
+    image: myoung34/github-runner:ubuntu-noble
+    restart: unless-stopped
+    environment:
+      RUNNER_SCOPE: repo
+      REPO_URL: https://github.com/nicolaslallier/Heaven
+      RUNNER_NAME: ${HEAVEN_RUNNER_NAME:-heaven-host}
+      # .github/workflows/deploy.yml choisit ce runner par ce label. Garder les
+      # deux en phase : un label renommé laisse le job en file d'attente pour
+      # toujours, sans erreur — « aucun runner ne correspond » n'est pas un
+      # échec pour GitHub.
+      LABELS: heaven
+      # Le workspace doit être un chemin *hôte*, monté ci-dessous au même
+      # chemin. scripts/ci-deploy.sh y monte le checkout dans un conteneur
+      # jetable, et un montage imbriqué est résolu par le démon : depuis un
+      # volume nommé, le démon ne trouverait rien et monterait un répertoire
+      # vide, sans le dire.
+      RUNNER_WORKDIR: ${HEAVEN_RUNNER_WORKDIR:-/srv/heaven-runner/_work}
+      # Désenregistrement après chaque job ; « restart: unless-stopped » en
+      # remonte un fraîchement enregistré. Aucun job n'hérite du répertoire de
+      # travail, du conteneur ou de la variable qu'un autre a laissés — ce qui
+      # compte plus qu'ailleurs, ce runner détenant la socket Docker.
+      EPHEMERAL: "true"
+      # Un PAT, échangé au démarrage contre le jeton d'enregistrement éphémère
+      # que le runner utilise réellement. Il vit dans .runner.env, jamais dans
+      # .env : .env est remis tel quel à Portainer comme environnement de la
+      # pile, et ce jeton peut enregistrer des runners sur le dépôt. Même
+      # raisonnement que PORTAINER_API_KEY.
+      ACCESS_TOKEN: ${GH_RUNNER_TOKEN:?Renseigner GH_RUNNER_TOKEN dans .runner.env (voir .env.example)}
+    volumes:
+      # Root sur le démon Docker de cette machine — le même pouvoir que l'UI de
+      # Portainer, et toute la raison pour laquelle ce runner peut déployer
+      # quoi que ce soit.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Monté au même chemin dedans que dehors : voir RUNNER_WORKDIR ci-dessus.
+      - ${HEAVEN_RUNNER_WORKDIR:-/srv/heaven-runner/_work}:${HEAVEN_RUNNER_WORKDIR:-/srv/heaven-runner/_work}
+    # Volontairement hors de infra-net : il lui faut HTTPS sortant vers GitHub,
+    # rien de plus. Les conteneurs que scripts/ci-deploy.sh démarre rejoignent
+    # eux-mêmes les réseaux dont ils ont besoin.

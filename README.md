@@ -106,12 +106,31 @@ prioritaire (`HEAVEN_CONFIG` indique où le trouver).
 | --- | --- |
 | `Dockerfile` | L'image de l'appliance |
 | `docker-compose.yml` | Pile construite depuis les sources (`docker compose up -d`, Portainer « Repository ») |
-| `deploy/portainer/stack.yml` | Pile à base d'image publiée, pour l'éditeur web de Portainer |
+| `deploy/portainer/stack.yml` | Pile à base d'image publiée : éditeur web de Portainer, et déploiement continu |
+| `docker-compose.runner.yml` | Le runner GitHub Actions auto-hébergé qui déploie la pile |
+| `scripts/portainer-stack.sh` | Pilote la pile par l'API de Portainer (`make deploy`) |
 | `.env.example` | Les variables et leurs valeurs par défaut |
 
 **[docs/portainer.md](docs/portainer.md)** détaille le déploiement pas à pas :
 construction par Portainer ou image publiée, montage des sources, restauration
 depuis un conteneur jetable, droits d'accès.
+
+### Déploiement continu
+
+Un push sur `main` construit l'image, la publie sur GHCR, puis redéploie la
+pile par l'API de Portainer — `.github/workflows/docker.yml` puis
+`.github/workflows/deploy.yml`. Le second tourne sur un runner auto-hébergé, et
+c'est obligé : Portainer n'expose son API que sur le LAN, sans ingress publique.
+
+```bash
+make deploy          # le même redéploiement, à la main
+make runner-up       # démarrer le runner sur la machine de déploiement
+```
+
+Tout ce qui est déployé vient de sources publiées — le compose depuis GitHub
+`main`, l'image depuis GHCR — jamais d'un checkout local. La mise en place
+(clé d'API, variables, runner) et la **note de sécurité** qui va avec sont en
+[section 6 de docs/portainer.md](docs/portainer.md#6-déployer-depuis-github-actions).
 
 ### Planification
 
