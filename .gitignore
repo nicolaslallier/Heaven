@@ -21,3 +21,8 @@ htmlcov/
 # Divers
 *.log
 .DS_Store
+
+# Déploiement — jetons, jamais versionnés (voir .env.example)
+.env
+.portainer.env
+.runner.env

@@ -123,6 +123,59 @@ docker-logs: ## Suit les journaux de l'appliance
 docker-config: ## Vérifie la syntaxe des piles compose et Portainer
 	docker compose --env-file .env.example config --quiet
 	docker compose -f deploy/portainer/stack.yml --env-file .env.example config --quiet
+	GH_RUNNER_TOKEN=verification docker compose -f docker-compose.runner.yml config --quiet
+
+# --- Déploiement -------------------------------------------------------------
+#
+# La pile tourne sous Portainer et se redéploie toute seule quand main bouge
+# (.github/workflows/deploy.yml). Ces cibles font la même chose à la main, sur
+# la même API : elles déploient toujours GitHub main, jamais le checkout local.
+# Elles ont besoin de jq, de la socket Docker, et de PORTAINER_API_KEY dans
+# .portainer.env. Voir docs/portainer.md.
+
+.PHONY: deploy
+deploy: ## Redéploie la pile par Portainer en retirant l'image à nouveau
+	./scripts/portainer-stack.sh pull
+
+.PHONY: deploy-norepull
+deploy-norepull: ## Redéploie la pile sans retirer l'image (rare : l'image est la livraison)
+	./scripts/portainer-stack.sh up
+
+.PHONY: deploy-down
+deploy-down: ## Arrête la pile déployée (les volumes, dépôt compris, restent)
+	./scripts/portainer-stack.sh down
+
+.PHONY: deploy-delete
+deploy-delete: ## Retire la pile de Portainer (les volumes restent)
+	./scripts/portainer-stack.sh delete
+
+.PHONY: deploy-selftest
+deploy-selftest: ## Contrôle le script de déploiement sans rien déployer
+	./scripts/portainer-stack.sh selftest
+
+# --- Runner CI ---------------------------------------------------------------
+#
+# Le runner auto-hébergé qui exécute le déploiement, dans son propre projet
+# compose : un redéploiement recrée la pile « heaven », et un runner recréé en
+# plein job ne rend jamais son résultat. --env-file .runner.env n'est pas
+# cosmétique — sans lui, compose irait chercher GH_RUNNER_TOKEN dans .env, qui
+# est remis à Portainer comme environnement de la pile.
+
+RUNNER_COMPOSE = docker compose -f docker-compose.runner.yml --env-file .runner.env
+
+.PHONY: runner-up
+runner-up: ## Démarre le runner CI auto-hébergé (son propre projet compose)
+	@test -f .runner.env || { echo "erreur : .runner.env absent — y écrire GH_RUNNER_TOKEN (PAT autorisé à enregistrer des runners) ; voir .env.example" 1>&2; exit 1; }
+	$(RUNNER_COMPOSE) up -d
+	@echo "Confirmer avec « make runner-logs » jusqu'à « Listening for Jobs »."
+
+.PHONY: runner-down
+runner-down: ## Arrête le runner CI (jamais en plein déploiement : le job ne rendrait rien)
+	$(RUNNER_COMPOSE) down
+
+.PHONY: runner-logs
+runner-logs: ## Suit les journaux du runner CI
+	$(RUNNER_COMPOSE) logs -f
 
 # --- Distribution ------------------------------------------------------------
 
@@ -151,4 +204,4 @@ help: ## Affiche cette aide
 	@echo "Cibles disponibles :"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| sort \
-		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
