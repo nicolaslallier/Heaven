@@ -1,0 +1,78 @@
+# Redéploie la pile Heaven par Portainer, une fois l'image publiée sur GHCR.
+#
+# runs-on désigne le runner auto-hébergé de docker-compose.runner.yml, et c'est
+# obligé : Portainer publie son API sur le LAN et sur son réseau Docker, sans
+# aucune ingress publique vers l'un ni l'autre. Un runner hébergé par GitHub ne
+# peut pas déployer cette pile du tout. Voir docs/portainer.md, section
+# « Déployer depuis GitHub Actions » — la note de sécurité comprise, qui est la
+# partie à lire avant de toucher à ce fichier.
+#
+# Ne jamais ajouter de déclencheur pull_request (ni pull_request_target) à un
+# workflow qui tourne sur ce label. Ce dépôt est public, le runner détient la
+# socket Docker, et la pull request d'un fork apporte son propre fichier de
+# workflow : la combinaison donne l'exécution de code arbitraire, en root, sur
+# la machine de déploiement.
+name: Déploiement
+
+on:
+  # Le déclencheur est la *publication de l'image*, pas le push : la pile tire
+  # ghcr.io/nicolaslallier/heaven:latest, et redéployer avant que « Image
+  # Docker » ait poussé le nouveau tag relancerait l'ancienne image en
+  # annonçant un succès. workflow_run attend donc la fin de ce workflow.
+  workflow_run:
+    workflows: ["Image Docker"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      repull:
+        description: "Retirer à nouveau l'image (décocher pour un simple redéploiement)"
+        type: boolean
+        default: true
+
+# Un déploiement à la fois, et jamais d'annulation en vol : un job annulé
+# laisserait Portainer au milieu d'un redéploiement.
+concurrency:
+  group: deploy-heaven
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Le déclencheur workflow_run se déclenche aussi sur un échec et sur les
+    # tags « v* » que construit docker.yml. Ne déployer que la réussite sur
+    # main : c'est la référence que suit la pile (refs/heads/main).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: [self-hosted, heaven]
+    steps:
+      # Ce checkout ne fournit que scripts/. Ce qui est déployé vient
+      # entièrement de sources publiées : Portainer lit
+      # deploy/portainer/stack.yml sur GitHub main, et la pile tire son image
+      # sur GHCR. Rien de ce répertoire n'atteint le conteneur déployé.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          # Ce runner détient la socket Docker ; ne pas laisser d'identifiant
+          # dans le .git/config du workspace à côté duquel le déploiement tourne.
+          persist-credentials: false
+
+      - name: Déployer par Portainer
+        env:
+          # Jeton root sur le démon Docker : un secret, jamais une variable.
+          # Portainer → My account → Access tokens.
+          PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
+          # Variables de dépôt (Settings → Secrets and variables → Actions →
+          # Variables) ; les valeurs par défaut sont celles de la pile Infra,
+          # qui héberge ce Portainer.
+          PORTAINER_NETWORK: ${{ vars.PORTAINER_NETWORK || 'infra-net' }}
+          PORTAINER_URL: ${{ vars.PORTAINER_URL || 'https://portainer:9443' }}
+          # Les variables de la pile, en lignes KEY=VALUE, au format de
+          # .env.example. Facultatif : stack.yml porte une valeur par défaut
+          # pour chaque clé. Les chemins hôtes (HEAVEN_SOURCES_PATH,
+          # HEAVEN_REPOSITORY_PATH) sont ce qu'on y met en pratique.
+          HEAVEN_STACK_ENV: ${{ vars.HEAVEN_STACK_ENV }}
+        run: ./scripts/ci-deploy.sh ${{ (github.event_name == 'workflow_dispatch' && !inputs.repull) && 'up' || 'pull' }}

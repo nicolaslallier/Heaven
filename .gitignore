@@ -24,3 +24,8 @@ htmlcov/
 
 web/node_modules/
 web/dist/
+
+# Déploiement — jetons, jamais versionnés (voir .env.example)
+.env
+.portainer.env
+.runner.env

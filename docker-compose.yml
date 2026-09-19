@@ -1,0 +1,51 @@
+# Pile Heaven — à construire depuis les sources.
+#
+# Usage direct :       docker compose up -d
+# Usage Portainer :    Stacks → Add stack → Repository (voir docs/portainer.md)
+#
+# Les valeurs ci-dessous se règlent dans un fichier .env (voir .env.example) ou,
+# dans Portainer, dans la section « Environment variables » de la pile.
+
+services:
+  heaven:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${HEAVEN_IMAGE:-heaven-backup:latest}
+    container_name: ${HEAVEN_CONTAINER_NAME:-heaven}
+    restart: unless-stopped
+    environment:
+      # Ce qui est sauvegardé, tel que vu depuis le conteneur.
+      HEAVEN_SOURCES: ${HEAVEN_SOURCES:-/sources}
+      HEAVEN_REPOSITORY: ${HEAVEN_REPOSITORY:-/repository}
+      HEAVEN_EXCLUDES: ${HEAVEN_EXCLUDES:-*.tmp,__pycache__,node_modules,.venv}
+      HEAVEN_COMPRESS: ${HEAVEN_COMPRESS:-true}
+      HEAVEN_FOLLOW_SYMLINKS: ${HEAVEN_FOLLOW_SYMLINKS:-false}
+      # Quand : « 02:30 », « 02:30,14:00 » ou un intervalle « 6h ».
+      HEAVEN_SCHEDULE: ${HEAVEN_SCHEDULE:-02:30}
+      HEAVEN_TAG: ${HEAVEN_TAG:-portainer}
+      HEAVEN_VERIFY_EVERY: ${HEAVEN_VERIFY_EVERY:-7}
+      # Combien d'instantanés garder.
+      HEAVEN_KEEP_LAST: ${HEAVEN_KEEP_LAST:-7}
+      HEAVEN_KEEP_DAILY: ${HEAVEN_KEEP_DAILY:-7}
+      HEAVEN_KEEP_WEEKLY: ${HEAVEN_KEEP_WEEKLY:-4}
+      HEAVEN_KEEP_MONTHLY: ${HEAVEN_KEEP_MONTHLY:-6}
+      TZ: ${TZ:-Europe/Paris}
+    volumes:
+      # Les données à sauvegarder, montées en lecture seule : le conteneur ne
+      # peut pas les modifier, même en cas de bogue.
+      - ${HEAVEN_SOURCES_PATH:-./data}:/sources:ro
+      # Le dépôt : volume nommé par défaut, ou un chemin hôte (/mnt/nas/heaven).
+      - ${HEAVEN_REPOSITORY_PATH:-heaven-repository}:/repository
+      - heaven-state:/var/lib/heaven
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  heaven-repository:
+  heaven-state:

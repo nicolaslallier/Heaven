@@ -72,10 +72,77 @@ supprime jamais d'instantané sans politique explicite.
 | `heaven restore [ID]` | Restaure vers `--target` (`--path`, `--overwrite`) |
 | `heaven verify [ID]` | Relit chaque objet et compare son empreinte |
 | `heaven prune` | Applique la rétention puis supprime les objets orphelins |
+| `heaven serve` | Mode appliance : sauvegarde en boucle selon une planification |
+| `heaven health` | État du service planifié (sonde de santé du conteneur) |
 
 Un instantané se désigne par son identifiant complet, un préfixe non ambigu,
 ou `latest`. `verify` retourne le code 2 si le dépôt est corrompu, ce qui
 permet de l'utiliser dans une tâche planifiée.
+
+## En conteneur (Docker, Portainer)
+
+`heaven serve` transforme la CLI en appliance : un conteneur qui reste allumé,
+sauvegarde selon une planification, applique la rétention, vérifie
+périodiquement le dépôt et renseigne la sonde de santé Docker.
+
+```bash
+docker build -t heaven-backup:latest .
+docker run -d --name heaven --restart unless-stopped \
+  -e HEAVEN_SOURCES=/sources -e HEAVEN_REPOSITORY=/repository \
+  -e HEAVEN_SCHEDULE=02:30 -e HEAVEN_KEEP_LAST=7 -e TZ=Europe/Paris \
+  -v /srv:/sources:ro -v heaven-repository:/repository \
+  heaven-backup:latest
+```
+
+Ou, avec la pile fournie : `cp .env.example .env && docker compose up -d`.
+
+En conteneur, `heaven.toml` devient facultatif : toute la configuration se lit
+dans l'environnement (`HEAVEN_SOURCES`, `HEAVEN_REPOSITORY`, `HEAVEN_EXCLUDES`,
+`HEAVEN_SCHEDULE`, `HEAVEN_KEEP_*`…), ce qui se saisit directement dans les
+variables d'une pile Portainer. Un `heaven.toml` monté dans le conteneur reste
+prioritaire (`HEAVEN_CONFIG` indique où le trouver).
+
+| Fichier | Rôle |
+| --- | --- |
+| `Dockerfile` | L'image de l'appliance |
+| `docker-compose.yml` | Pile construite depuis les sources (`docker compose up -d`, Portainer « Repository ») |
+| `deploy/portainer/stack.yml` | Pile à base d'image publiée : éditeur web de Portainer, et déploiement continu |
+| `docker-compose.runner.yml` | Le runner GitHub Actions auto-hébergé qui déploie la pile |
+| `scripts/portainer-stack.sh` | Pilote la pile par l'API de Portainer (`make deploy`) |
+| `.env.example` | Les variables et leurs valeurs par défaut |
+
+**[docs/portainer.md](docs/portainer.md)** détaille le déploiement pas à pas :
+construction par Portainer ou image publiée, montage des sources, restauration
+depuis un conteneur jetable, droits d'accès.
+
+### Déploiement continu
+
+Un push sur `main` construit l'image, la publie sur GHCR, puis redéploie la
+pile par l'API de Portainer — `.github/workflows/docker.yml` puis
+`.github/workflows/deploy.yml`. Le second tourne sur un runner auto-hébergé, et
+c'est obligé : Portainer n'expose son API que sur le LAN, sans ingress publique.
+
+```bash
+make deploy          # le même redéploiement, à la main
+make runner-up       # démarrer le runner sur la machine de déploiement
+```
+
+Tout ce qui est déployé vient de sources publiées — le compose depuis GitHub
+`main`, l'image depuis GHCR — jamais d'un checkout local. La mise en place
+(clé d'API, variables, runner) et la **note de sécurité** qui va avec sont en
+[section 6 de docs/portainer.md](docs/portainer.md#6-déployer-depuis-github-actions).
+
+### Planification
+
+`HEAVEN_SCHEDULE` (ou `--schedule`) accepte une heure fixe `02:30`, plusieurs
+heures `02:30,14:00`, ou un intervalle `6h` / `90m`. Les heures sont
+interprétées dans le fuseau du conteneur (`TZ`).
+
+Chaque cycle enchaîne sauvegarde, rétention, puis — tous les
+`HEAVEN_VERIFY_EVERY` cycles — une vérification complète du dépôt. Deux
+garde-fous protègent les données existantes : un cycle dont **aucune** source
+n'est accessible (volume oublié ou démonté) n'écrit pas d'instantané, et un
+instantané vide ne déclenche jamais la rétention.
 
 ## Structure du dépôt
 
@@ -111,12 +178,13 @@ make check      # ce que vérifie la CI : lint + formatage + tests
 | Module | Responsabilité |
 | --- | --- |
 | `heaven/cli.py` | Analyse des arguments et affichage |
-| `heaven/config.py` | Lecture et validation de `heaven.toml` |
+| `heaven/config.py` | Lecture et validation de `heaven.toml` et de l'environnement |
 | `heaven/scanner.py` | Parcours des sources, exclusions, métadonnées |
 | `heaven/repository.py` | Magasin d'objets et instantanés sur disque |
 | `heaven/engine.py` | `backup`, `restore`, `verify`, `prune` |
 | `heaven/manifest.py` | Sérialisation des instantanés |
 | `heaven/hashing.py` | Empreintes calculées en flux |
+| `heaven/scheduler.py` | Mode appliance : planification, état, sonde de santé |
 
 ## Limites connues
 
