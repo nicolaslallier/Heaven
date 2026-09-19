@@ -8,9 +8,11 @@ VENV ?= .venv
 BIN := $(VENV)/bin
 STAMP := $(VENV)/.install-stamp
 
-# Répertoire cible de `make restore` / source de `make backup`.
+# Dépôt d'origine ou de destination partagé par les cibles d'utilisation.
+REPO   ?=
+# Cible de `make restore` ; source de `make backup` (vide par défaut = config).
 TARGET ?= /tmp/heaven-restauration
-SOURCE ?= .
+SOURCE ?=
 
 .DEFAULT_GOAL := help
 
@@ -57,24 +59,45 @@ run: $(STAMP) ## Exécute la CLI (ARGS="backup --tag quotidien")
 	$(BIN)/heaven $(ARGS)
 
 .PHONY: backup
-backup: $(STAMP) ## Sauvegarde SOURCE (défaut : le répertoire courant)
-	$(BIN)/heaven backup --source $(SOURCE)
+backup: $(STAMP) ## Sauvegarde SOURCE -> REPO (vide par défaut = la configuration)
+ifeq ($(SOURCE),)
+	$(BIN)/heaven backup $(if $(REPO),--repository $(REPO),) $(ARGS)
+else
+	@if [ -z "$(REPO)" ]; then echo "erreur : SOURCE = $(SOURCE) impose REPO ; ex. make backup REPO=./depot SOURCE=~/Docs" 1>&2; exit 1; fi
+	$(BIN)/heaven backup --source $(SOURCE) --repository $(REPO) $(ARGS)
+endif
 
 .PHONY: snapshots
-snapshots: $(STAMP) ## Liste les instantanés du dépôt configuré
-	$(BIN)/heaven snapshots
+snapshots: $(STAMP) ## Liste les instantanés de REPO (par défaut : la configuration)
+ifeq ($(REPO),)
+	$(BIN)/heaven snapshots $(ARGS)
+else
+	$(BIN)/heaven snapshots --repository $(REPO) $(ARGS)
+endif
 
 .PHONY: restore
-restore: $(STAMP) ## Restaure le dernier instantané vers TARGET
-	$(BIN)/heaven restore latest --target $(TARGET)
+restore: $(STAMP) ## Restaure le dernier instantané de REPO vers TARGET
+ifeq ($(REPO),)
+	$(BIN)/heaven restore latest --target $(TARGET) $(ARGS)
+else
+	$(BIN)/heaven restore latest --repository $(REPO) --target $(TARGET) $(ARGS)
+endif
 
 .PHONY: verify
-verify: $(STAMP) ## Contrôle l'intégrité du dépôt
-	$(BIN)/heaven verify
+verify: $(STAMP) ## Contrôle l'intégrité de REPO (par défaut : la configuration)
+ifeq ($(REPO),)
+	$(BIN)/heaven verify $(ARGS)
+else
+	$(BIN)/heaven verify --repository $(REPO) $(ARGS)
+endif
 
 .PHONY: prune
-prune: $(STAMP) ## Applique la rétention et supprime les objets orphelins
-	$(BIN)/heaven prune
+prune: $(STAMP) ## Applique la rétention et supprime les objets orphelins de REPO
+ifeq ($(REPO),)
+	$(BIN)/heaven prune $(ARGS)
+else
+	$(BIN)/heaven prune --repository $(REPO) $(ARGS)
+endif
 
 # --- Distribution ------------------------------------------------------------
 
