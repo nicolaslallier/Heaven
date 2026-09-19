@@ -127,3 +127,12 @@ help: ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| sort \
 		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+# --- Interface web -------------------------------------------------------------
+
+WEB_PORT ?= 8080
+
+.PHONY: web
+web: ## Construit et lance l'interface web (http://localhost:$(WEB_PORT))
+	docker build -t heaven-web web
+	docker run --rm -p $(WEB_PORT):80 heaven-web
