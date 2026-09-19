@@ -1,7 +1,17 @@
+<script setup>
+import { ref } from 'vue'
+
+const status = ref('connexion à Heaven…')
+fetch('/api/health')
+  .then((response) => response.json())
+  .then((body) => (status.value = body.reason ?? body.error))
+  .catch(() => (status.value = 'Heaven injoignable'))
+</script>
+
 <template>
   <main>
     <h1>Heaven</h1>
-    <p>Hello world — l'interface de gestion des sauvegardes arrive bientôt.</p>
+    <p>{{ status }}</p>
   </main>
 </template>
 

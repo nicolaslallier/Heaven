@@ -9,6 +9,7 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "docker-compose.yml"
+      - "web/**"
       - "deploy/**"
       - "docker-compose.runner.yml"
       - "scripts/**"
