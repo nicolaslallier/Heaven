@@ -106,6 +106,7 @@ prioritaire (`HEAVEN_CONFIG` indique où le trouver).
 | --- | --- |
 | `Dockerfile` | L'image de l'appliance |
 | `docker-compose.yml` | Pile construite depuis les sources (`docker compose up -d`, Portainer « Repository ») |
+| `web/` | L'interface Vue et son nginx : seul port publié (`HEAVEN_WEB_PORT`), il relaie `/api/` vers Heaven (`HEAVEN_LISTEN`) |
 | `deploy/portainer/stack.yml` | Pile à base d'image publiée : éditeur web de Portainer, et déploiement continu |
 | `docker-compose.runner.yml` | Le runner GitHub Actions auto-hébergé qui déploie la pile |
 | `scripts/portainer-stack.sh` | Pilote la pile par l'API de Portainer (`make deploy`) |

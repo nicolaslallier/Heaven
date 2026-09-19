@@ -211,6 +211,5 @@ help: ## Affiche cette aide
 WEB_PORT ?= 8080
 
 .PHONY: web
-web: ## Construit et lance l'interface web (http://localhost:$(WEB_PORT))
-	docker build -t heaven-web web
-	docker run --rm -p $(WEB_PORT):80 heaven-web
+web: ## Lance Heaven derrière nginx (http://localhost:$(WEB_PORT))
+	HEAVEN_WEB_PORT=$(WEB_PORT) docker compose up --build heaven web

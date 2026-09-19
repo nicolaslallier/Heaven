@@ -31,6 +31,8 @@ services:
       HEAVEN_KEEP_WEEKLY: ${HEAVEN_KEEP_WEEKLY:-4}
       HEAVEN_KEEP_MONTHLY: ${HEAVEN_KEEP_MONTHLY:-6}
       TZ: ${TZ:-Europe/Paris}
+      # API en lecture seule, relayée par le service « web » : aucun port publié.
+      HEAVEN_LISTEN: 0.0.0.0:8000
     volumes:
       # Les données à sauvegarder, montées en lecture seule : le conteneur ne
       # peut pas les modifier, même en cas de bogue.
@@ -45,6 +47,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Seule porte d'entrée : l'interface, et /api/ relayé vers « heaven ».
+  web:
+    build: web
+    image: ${HEAVEN_WEB_IMAGE:-heaven-web:latest}
+    restart: unless-stopped
+    depends_on:
+      - heaven
+    ports:
+      - "${HEAVEN_WEB_PORT:-8080}:80"
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   heaven-repository:
