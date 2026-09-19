@@ -9,12 +9,12 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "docker-compose.yml"
+      - "web/**"
       - "deploy/**"
       - "docker-compose.runner.yml"
       - "scripts/**"
       - "pyproject.toml"
       - "src/**"
-      - "web/**"
       - ".github/workflows/docker.yml"
 
 env:
@@ -154,7 +154,10 @@ jobs:
         run: |
           set -eux
           image="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
-          docker run -d --name heaven-web-essai -p 8080:80 "$image"
+          # nginx résout « heaven » (proxy_pass) au démarrage : sans l'appliance
+          # à côté, un alias suffit — l'essai ne porte que sur le bundle servi.
+          docker run -d --name heaven-web-essai -p 8080:80 \
+            --add-host heaven:127.0.0.1 "$image"
           for _ in $(seq 30); do
             curl -fsS http://127.0.0.1:8080/ >/tmp/page.html && break
             sleep 1

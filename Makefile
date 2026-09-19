@@ -212,16 +212,14 @@ help: ## Affiche cette aide
 
 # --- Interface web -------------------------------------------------------------
 #
-# Prévisualisation d'un seul conteneur, sans l'appliance à côté. Dans la pile,
-# l'interface est le service « web » et son port se règle par HEAVEN_WEB_PORT
-# (« make docker-up », ou Portainer — voir docs/portainer.md).
+# L'interface est le service « web » de la pile ; son port se règle par
+# HEAVEN_WEB_PORT (« make docker-up », ou Portainer — voir docs/portainer.md).
 
 WEB_PORT ?= 8080
 
 .PHONY: web
-web: ## Construit et lance l'interface web seule (http://localhost:$(WEB_PORT))
-	docker build -t heaven-web web
-	docker run --rm -p $(WEB_PORT):80 heaven-web
+web: ## Lance Heaven derrière nginx (http://localhost:$(WEB_PORT))
+	HEAVEN_WEB_PORT=$(WEB_PORT) docker compose up --build heaven web
 
 .PHONY: web-dev
 web-dev: ## Lance l'interface en mode développement (Vite, rechargement à chaud)

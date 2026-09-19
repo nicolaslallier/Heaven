@@ -21,6 +21,7 @@ LABEL org.opencontainers.image.title="Heaven — interface web" \
       org.opencontainers.image.licenses="MIT"
 
 COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # La sonde interroge la page servie : le conteneur passe en « unhealthy » si
 # nginx ne répond plus, ce que Portainer affiche comme pour l'appliance.

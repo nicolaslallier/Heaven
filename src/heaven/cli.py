@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
 
-from . import __version__, engine, scheduler
+from . import __version__, api, engine, scheduler
 from .config import ENV_PREFIX, Config, RetentionPolicy, config_from_env, find_config, load_config
 from .errors import HeavenError
 from .repository import Repository
@@ -137,6 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--state-file", type=Path, help="fichier d'état relu par « heaven health »")
     serve.add_argument("--once", action="store_true", help="n'exécuter qu'un seul cycle")
+    serve.add_argument(
+        "--listen",
+        default=_env(f"{ENV_PREFIX}LISTEN"),
+        help="servir l'API en lecture seule sur « hôte:port » (derrière nginx)",
+    )
 
     health = subparsers.add_parser(
         "health", help="état du service planifié (sonde de santé du conteneur)"
@@ -291,15 +296,21 @@ def _cmd_prune(args: argparse.Namespace) -> int:
 def _cmd_serve(args: argparse.Namespace) -> int:
     config = _resolve_config(args)
     schedule = scheduler.parse_schedule(args.schedule)
-    return scheduler.serve(
-        config,
-        schedule,
-        tag=args.tag,
-        initial_backup=not args.no_initial_backup,
-        verify_every=max(args.verify_every, 0),
-        state_path=args.state_file,
-        max_cycles=1 if args.once else None,
-    )
+    state_path = args.state_file or scheduler.default_state_path()
+    server = api.start(args.listen, config.repository, state_path) if args.listen else None
+    try:
+        return scheduler.serve(
+            config,
+            schedule,
+            tag=args.tag,
+            initial_backup=not args.no_initial_backup,
+            verify_every=max(args.verify_every, 0),
+            state_path=state_path,
+            max_cycles=1 if args.once else None,
+        )
+    finally:
+        if server is not None:
+            server.shutdown()
 
 
 def _cmd_health(args: argparse.Namespace) -> int:

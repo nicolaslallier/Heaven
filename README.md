@@ -95,8 +95,9 @@ docker run -d --name heaven --restart unless-stopped \
 ```
 
 Ou, avec la pile fournie : `cp .env.example .env && docker compose up -d`. La
-pile monte deux services : l'appliance `heaven`, qui n'écoute sur rien, et
-l'interface web `web`, servie sur `http://<hote>:8080` (`HEAVEN_WEB_PORT`).
+pile monte deux services : l'appliance `heaven`, qui ne publie aucun port, et
+`web`, le nginx servi sur `http://<hote>:8080` (`HEAVEN_WEB_PORT`) qui relaie
+`/api/` vers elle.
 
 En conteneur, `heaven.toml` devient facultatif : toute la configuration se lit
 dans l'environnement (`HEAVEN_SOURCES`, `HEAVEN_REPOSITORY`, `HEAVEN_EXCLUDES`,
@@ -107,8 +108,8 @@ prioritaire (`HEAVEN_CONFIG` indique où le trouver).
 | Fichier | Rôle |
 | --- | --- |
 | `Dockerfile` | L'image de l'appliance |
-| `web/` | L'interface web (Vue + Vite), son image nginx, et `make web` pour la lancer seule |
 | `docker-compose.yml` | Pile construite depuis les sources (`docker compose up -d`, Portainer « Repository ») |
+| `web/` | L'interface Vue et son nginx : seul port publié (`HEAVEN_WEB_PORT`), il relaie `/api/` vers Heaven (`HEAVEN_LISTEN`) |
 | `deploy/portainer/stack.yml` | Pile à base d'image publiée : éditeur web de Portainer, et déploiement continu |
 | `docker-compose.runner.yml` | Le runner GitHub Actions auto-hébergé qui déploie la pile |
 | `scripts/portainer-stack.sh` | Pilote la pile par l'API de Portainer (`make deploy`) |

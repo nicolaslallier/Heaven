@@ -8,8 +8,8 @@ La pile porte deux services :
 
 | Service | Rôle | Port publié |
 | --- | --- | --- |
-| `heaven` | l'appliance : planification, sauvegardes, rétention, vérification | aucun |
-| `web` | l'interface de consultation, statique, servie par nginx | `HEAVEN_WEB_PORT` (8080) |
+| `heaven` | l'appliance : planification, sauvegardes, rétention, vérification ; API en lecture seule sur `:8000`, interne à la pile | aucun |
+| `web` | nginx : l'interface de consultation, et `/api/` relayé vers `heaven` | `HEAVEN_WEB_PORT` (8080) |
 
 Tout se règle par variables d'environnement — aucun `heaven.toml` n'est requis.
 
@@ -108,10 +108,10 @@ Elle répond sur `http://<hote>:8080` — l'hôte étant la machine Docker, pas
 Portainer. Le conteneur `heaven-web` a sa propre pastille de santé, qui
 interroge la page servie.
 
-L'interface ne lit pas encore le dépôt : c'est une page d'accueil, servie sans
-état ni volume. Elle ne publie donc rien de vos sauvegardes, mais le port qui la
-sert est le seul de la pile — le placer derrière le reverse proxy plutôt que sur
-le LAN reste le bon réflexe pour la suite.
+L'interface affiche la santé de l'appliance, lue par `/api/health` ; `/api/`
+expose aussi la liste des instantanés (`/api/snapshots`), en lecture seule. Ce
+port, le seul de la pile, sert donc ces métadonnées sans authentification : le placer derrière le reverse proxy plutôt
+que sur le LAN reste le bon réflexe.
 
 ## 4. Opérations courantes
 
