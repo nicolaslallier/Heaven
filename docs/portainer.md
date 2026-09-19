@@ -4,6 +4,13 @@ Heaven tourne en mode *appliance* : un conteneur qui reste allumé, sauvegarde
 selon une planification, applique la rétention, vérifie régulièrement le dépôt,
 et expose son état à la sonde de santé Docker que Portainer affiche.
 
+La pile porte deux services :
+
+| Service | Rôle | Port publié |
+| --- | --- | --- |
+| `heaven` | l'appliance : planification, sauvegardes, rétention, vérification | aucun |
+| `web` | l'interface de consultation, statique, servie par nginx | `HEAVEN_WEB_PORT` (8080) |
+
 Tout se règle par variables d'environnement — aucun `heaven.toml` n'est requis.
 
 ## 1. Choisir la voie de déploiement
@@ -49,6 +56,9 @@ toutes, puis en la redéployant à chaque image publiée. Section 6.
 | `HEAVEN_KEEP_LAST` / `_DAILY` / `_WEEKLY` / `_MONTHLY` | `7` / `7` / `4` / `6` | rétention |
 | `HEAVEN_NO_INITIAL_BACKUP` | *(vide)* | `true` : attendre la première échéance au lieu de sauvegarder au démarrage |
 | `TZ` | `Europe/Paris` | fuseau dans lequel `HEAVEN_SCHEDULE` est interprété |
+| `HEAVEN_WEB_PORT` | `8080` | port **hôte** de l'interface web : `http://<hote>:8080` |
+| `HEAVEN_IMAGE` | `ghcr.io/nicolaslallier/heaven:latest` | image de l'appliance |
+| `HEAVEN_WEB_IMAGE` | `ghcr.io/nicolaslallier/heaven-web:latest` | image de l'interface web |
 
 Les chemins de `HEAVEN_SOURCES` sont ceux **du conteneur**. Pour sauvegarder
 plusieurs répertoires hôtes, ajouter les montages correspondants et les lister :
@@ -91,6 +101,17 @@ Les journaux (*Containers* → `heaven` → *Logs*) montrent chaque cycle :
 
 La pastille de santé du conteneur passe au rouge si le dernier cycle a échoué,
 si le dépôt est corrompu, ou si l'échéance est dépassée de plus d'une heure.
+
+### L'interface web
+
+Elle répond sur `http://<hote>:8080` — l'hôte étant la machine Docker, pas
+Portainer. Le conteneur `heaven-web` a sa propre pastille de santé, qui
+interroge la page servie.
+
+L'interface ne lit pas encore le dépôt : c'est une page d'accueil, servie sans
+état ni volume. Elle ne publie donc rien de vos sauvegardes, mais le port qui la
+sert est le seul de la pile — le placer derrière le reverse proxy plutôt que sur
+le LAN reste le bon réflexe pour la suite.
 
 ## 4. Opérations courantes
 
@@ -147,9 +168,14 @@ pile — et c'est la même mécanique que le dépôt [Infra](https://github.com/
 
 ```
 push sur main → « Image Docker » (runner GitHub) → ghcr.io/…/heaven:latest
+                                                   ghcr.io/…/heaven-web:latest
                                                           ↓
               « Déploiement » (runner auto-hébergé) → API Portainer → pile « heaven »
 ```
+
+Les deux images sont construites par le **même** workflow, en deux jobs : le
+déploiement attend ce workflow, et publier l'interface ailleurs redéploierait la
+pile avant que son image existe.
 
 Le déclencheur est la **publication de l'image**, pas le push : la pile tire
 `:latest`, et redéployer avant que le nouveau tag soit poussé relancerait

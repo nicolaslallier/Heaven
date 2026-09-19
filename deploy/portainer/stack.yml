@@ -33,6 +33,24 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # L'interface web : statique, sans volume ni état. Le seul port publié de la
+  # pile — l'appliance, elle, n'écoute sur rien.
+  web:
+    image: ${HEAVEN_WEB_IMAGE:-ghcr.io/nicolaslallier/heaven-web:latest}
+    container_name: ${HEAVEN_WEB_CONTAINER_NAME:-heaven-web}
+    restart: unless-stopped
+    ports:
+      - "${HEAVEN_WEB_PORT:-8080}:80"
+    environment:
+      TZ: ${TZ:-Europe/Paris}
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   heaven-repository:
   heaven-state:
