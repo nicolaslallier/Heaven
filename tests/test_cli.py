@@ -86,3 +86,86 @@ def test_list_shows_snapshot_entries(
     assert main(["list", "--repository", str(repository)]) == 0
     out = capsys.readouterr().out
     assert "data/docs/a.txt" in out
+
+
+# -- mode conteneur -------------------------------------------------------
+
+
+def test_cli_falls_back_to_the_environment(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sans heaven.toml, la pile Docker se configure par variables d'environnement."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("heaven.cli.find_config", lambda: None)
+    monkeypatch.setenv("HEAVEN_SOURCES", str(tree))
+    monkeypatch.setenv("HEAVEN_REPOSITORY", str(tmp_path / "repo"))
+    monkeypatch.setenv("HEAVEN_EXCLUDES", "*.log")
+
+    assert main(["backup"]) == 0
+    assert main(["snapshots"]) == 0
+    assert (tmp_path / "repo" / "config.json").is_file()
+
+
+def test_cli_prefers_the_config_file_named_by_heaven_config(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "ailleurs" / "heaven.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        f'[backup]\nsources = ["{tree}"]\nrepository = "{tmp_path / "repo"}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HEAVEN_CONFIG", str(config_path))
+
+    assert main(["backup"]) == 0
+    assert (tmp_path / "repo" / "config.json").is_file()
+
+
+def test_serve_once_then_health(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    state_path = tmp_path / "state.json"
+    monkeypatch.setenv("HEAVEN_STATE", str(state_path))
+
+    code = main(
+        [
+            "serve",
+            "--once",
+            "--schedule",
+            "6h",
+            "--repository",
+            str(tmp_path / "repo"),
+            "--source",
+            str(tree),
+            "--state-file",
+            str(state_path),
+        ]
+    )
+    assert code == 0
+    assert state_path.is_file()
+
+    capsys.readouterr()
+    assert main(["health"]) == 0
+    assert "prochaine sauvegarde" in capsys.readouterr().out
+
+
+def test_health_without_state_is_unhealthy(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    assert main(["health", "--state-file", str(tmp_path / "absent.json")]) == 1
+    assert "aucun état" in capsys.readouterr().err
+
+
+def test_read_commands_need_only_the_repository_in_the_environment(
+    tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un conteneur de restauration n'a pas de sources : HEAVEN_REPOSITORY suffit."""
+    repository = tmp_path / "repo"
+    main(["backup", "--source", str(tree), "--repository", str(repository)])
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("heaven.cli.find_config", lambda: None)
+    monkeypatch.setenv("HEAVEN_REPOSITORY", str(repository))
+
+    assert main(["snapshots"]) == 0
+    assert main(["verify"]) == 0
+    assert main(["restore", "--target", str(tmp_path / "out")]) == 0

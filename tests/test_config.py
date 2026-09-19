@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from heaven.config import find_config, load_config
+from heaven.config import config_from_env, find_config, load_config
 from heaven.errors import ConfigError
 
 
@@ -92,3 +92,50 @@ def test_find_config_walks_up_parents(tmp_path: Path) -> None:
 
 def test_find_config_returns_none_when_absent(tmp_path: Path) -> None:
     assert find_config(tmp_path) is None
+
+
+# -- configuration par l'environnement (mode conteneur) -------------------
+
+
+def test_config_from_env_reads_a_container_style_environment() -> None:
+    config = config_from_env(
+        {
+            "HEAVEN_SOURCES": "/sources/docs:/sources/photos",
+            "HEAVEN_REPOSITORY": "/repository",
+            "HEAVEN_EXCLUDES": "*.tmp, node_modules",
+            "HEAVEN_COMPRESS": "false",
+            "HEAVEN_FOLLOW_SYMLINKS": "yes",
+            "HEAVEN_KEEP_LAST": "7",
+            "HEAVEN_KEEP_MONTHLY": "6",
+        }
+    )
+
+    assert config is not None
+    assert config.sources == [Path("/sources/docs"), Path("/sources/photos")]
+    assert config.repository == Path("/repository")
+    assert config.excludes == ["*.tmp", "node_modules"]
+    assert config.compress is False
+    assert config.follow_symlinks is True
+    assert config.retention.keep_last == 7
+    assert config.retention.keep_monthly == 6
+    assert config.retention.keep_daily == 0
+
+
+def test_config_from_env_is_absent_when_nothing_is_set() -> None:
+    assert config_from_env({}) is None
+    assert config_from_env({"PATH": "/usr/bin"}) is None
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"HEAVEN_SOURCES": "/sources"},
+        {"HEAVEN_REPOSITORY": "/repository"},
+        {"HEAVEN_SOURCES": "/s", "HEAVEN_REPOSITORY": "/r", "HEAVEN_KEEP_LAST": "sept"},
+        {"HEAVEN_SOURCES": "/s", "HEAVEN_REPOSITORY": "/r", "HEAVEN_KEEP_LAST": "-1"},
+        {"HEAVEN_SOURCES": "/s", "HEAVEN_REPOSITORY": "/r", "HEAVEN_COMPRESS": "peut-être"},
+    ],
+)
+def test_config_from_env_rejects_an_incomplete_environment(env: dict[str, str]) -> None:
+    with pytest.raises(ConfigError):
+        config_from_env(env)

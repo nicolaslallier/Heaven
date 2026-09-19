@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
+from datetime import timedelta
 from pathlib import Path
 
-from . import __version__, engine
-from .config import Config, RetentionPolicy, find_config, load_config
+from . import __version__, engine, scheduler
+from .config import ENV_PREFIX, Config, RetentionPolicy, config_from_env, find_config, load_config
 from .errors import HeavenError
 from .repository import Repository
 
@@ -101,6 +103,52 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="montrer ce qui serait supprimé, sans rien supprimer"
     )
 
+    serve = subparsers.add_parser(
+        "serve", help="mode appliance : sauvegarder en boucle selon une planification"
+    )
+    serve.add_argument(
+        "--schedule",
+        default=_env(f"{ENV_PREFIX}SCHEDULE", scheduler.DEFAULT_SCHEDULE),
+        help="« 6h », « 90m », « 02:30 » ou « 02:30,14:00 » (défaut : %(default)s)",
+    )
+    serve.add_argument("--tag", default=_env(f"{ENV_PREFIX}TAG"), help="étiquette des instantanés")
+    serve.add_argument(
+        "--source",
+        type=Path,
+        action="append",
+        dest="sources",
+        help="source à sauvegarder (répétable ; ignore la configuration)",
+    )
+    serve.add_argument("--repository", type=Path, help="dépôt de destination")
+    serve.add_argument(
+        "--exclude", action="append", dest="excludes", default=[], help="motif à exclure"
+    )
+    serve.add_argument(
+        "--no-initial-backup",
+        action="store_true",
+        default=_env_flag(f"{ENV_PREFIX}NO_INITIAL_BACKUP"),
+        help="attendre la première échéance au lieu de sauvegarder au démarrage",
+    )
+    serve.add_argument(
+        "--verify-every",
+        type=int,
+        default=_env_int(f"{ENV_PREFIX}VERIFY_EVERY", 7),
+        help="vérifier l'intégrité tous les N cycles (0 : jamais ; défaut : %(default)s)",
+    )
+    serve.add_argument("--state-file", type=Path, help="fichier d'état relu par « heaven health »")
+    serve.add_argument("--once", action="store_true", help="n'exécuter qu'un seul cycle")
+
+    health = subparsers.add_parser(
+        "health", help="état du service planifié (sonde de santé du conteneur)"
+    )
+    health.add_argument("--state-file", type=Path, help="fichier d'état écrit par « heaven serve »")
+    health.add_argument(
+        "--grace",
+        type=int,
+        default=_env_int(f"{ENV_PREFIX}HEALTH_GRACE", 3600),
+        help="retard toléré, en secondes, sur l'échéance (défaut : %(default)s)",
+    )
+
     return parser
 
 
@@ -126,6 +174,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         "restore": _cmd_restore,
         "verify": _cmd_verify,
         "prune": _cmd_prune,
+        "serve": _cmd_serve,
+        "health": _cmd_health,
     }
     return handlers[args.command](args)
 
@@ -238,6 +288,27 @@ def _cmd_prune(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    config = _resolve_config(args)
+    schedule = scheduler.parse_schedule(args.schedule)
+    return scheduler.serve(
+        config,
+        schedule,
+        tag=args.tag,
+        initial_backup=not args.no_initial_backup,
+        verify_every=max(args.verify_every, 0),
+        state_path=args.state_file,
+        max_cycles=1 if args.once else None,
+    )
+
+
+def _cmd_health(args: argparse.Namespace) -> int:
+    state_path = args.state_file or scheduler.default_state_path()
+    healthy, reason = scheduler.health(state_path, grace=timedelta(seconds=max(args.grace, 0)))
+    print(reason, file=sys.stdout if healthy else sys.stderr)
+    return 0 if healthy else 1
+
+
 # -- utilitaires ---------------------------------------------------------
 
 
@@ -254,9 +325,11 @@ def _resolve_config(args: argparse.Namespace) -> Config:
             repository=repository.expanduser(),
             excludes=list(args.excludes),
             compress=not getattr(args, "no_compress", False),
+            # Sans configuration, on ne devine pas de politique : tout est conservé.
+            retention=RetentionPolicy(keep_last=0),
         )
 
-    config = load_config(_config_path(args))
+    config = _load_config(args)
     if repository is not None:
         config.repository = repository.expanduser()
     if getattr(args, "excludes", None):
@@ -269,18 +342,35 @@ def _resolve_config(args: argparse.Namespace) -> Config:
 def _resolve_repository(args: argparse.Namespace) -> Path:
     if getattr(args, "repository", None):
         return args.repository.expanduser()
-    return load_config(_config_path(args)).repository
+    configured = os.environ.get(f"{ENV_PREFIX}REPOSITORY")
+    if configured and _config_path(args) is None:
+        # Lister ou restaurer ne demande pas de sources : le dépôt suffit, ce qui
+        # permet un conteneur jetable configuré du seul HEAVEN_REPOSITORY.
+        return Path(configured).expanduser()
+    return _load_config(args).repository
 
 
-def _config_path(args: argparse.Namespace) -> Path:
+def _load_config(args: argparse.Namespace) -> Config:
+    """Configuration : fichier demandé, sinon fichier trouvé, sinon environnement."""
+    path = _config_path(args)
+    if path is not None:
+        return load_config(path)
+    from_env = config_from_env()
+    if from_env is None:
+        raise HeavenError(
+            "aucune configuration trouvée ; lancez « heaven init », passez "
+            f"--config/--repository, ou définissez {ENV_PREFIX}SOURCES et {ENV_PREFIX}REPOSITORY"
+        )
+    return from_env
+
+
+def _config_path(args: argparse.Namespace) -> Path | None:
     if args.config:
         return args.config
-    found = find_config()
-    if found is None:
-        raise HeavenError(
-            "aucune configuration trouvée ; lancez « heaven init » ou passez --config/--repository"
-        )
-    return found
+    configured = os.environ.get(f"{ENV_PREFIX}CONFIG")
+    if configured:
+        return Path(configured).expanduser()
+    return find_config()
 
 
 def _resolve_policy(args: argparse.Namespace) -> RetentionPolicy:
@@ -294,7 +384,27 @@ def _resolve_policy(args: argparse.Namespace) -> RetentionPolicy:
     if args.repository:
         # Sans configuration, on ne devine pas de politique : tout est conservé.
         return RetentionPolicy(keep_last=0)
-    return load_config(_config_path(args)).retention
+    return _load_config(args).retention
+
+
+def _env(name: str, default: str | None = None) -> str | None:
+    """Valeur d'environnement, utilisée comme défaut des options en mode conteneur."""
+    value = os.environ.get(name, "").strip()
+    return value or default
+
+
+def _env_flag(name: str) -> bool:
+    return (os.environ.get(name, "").strip().lower()) in {"1", "true", "yes", "on", "oui"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise HeavenError(f"{name} doit être un entier (reçu : {value!r})") from exc
 
 
 def _human(size: float) -> str:
