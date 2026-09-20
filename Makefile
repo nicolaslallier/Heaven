@@ -119,6 +119,10 @@ docker-down: ## Arrête la pile docker-compose
 docker-logs: ## Suit les journaux de l'appliance
 	docker compose logs -f heaven
 
+.PHONY: docker-logs-web
+docker-logs-web: ## Suit les journaux de l'interface web
+	docker compose logs -f web
+
 .PHONY: docker-config
 docker-config: ## Vérifie la syntaxe des piles compose et Portainer
 	docker compose --env-file .env.example config --quiet
@@ -207,9 +211,16 @@ help: ## Affiche cette aide
 		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 # --- Interface web -------------------------------------------------------------
+#
+# L'interface est le service « web » de la pile ; son port se règle par
+# HEAVEN_WEB_PORT (« make docker-up », ou Portainer — voir docs/portainer.md).
 
 WEB_PORT ?= 8080
 
 .PHONY: web
 web: ## Lance Heaven derrière nginx (http://localhost:$(WEB_PORT))
 	HEAVEN_WEB_PORT=$(WEB_PORT) docker compose up --build heaven web
+
+.PHONY: web-dev
+web-dev: ## Lance l'interface en mode développement (Vite, rechargement à chaud)
+	cd web && npm install && npm run dev

@@ -94,7 +94,10 @@ docker run -d --name heaven --restart unless-stopped \
   heaven-backup:latest
 ```
 
-Ou, avec la pile fournie : `cp .env.example .env && docker compose up -d`.
+Ou, avec la pile fournie : `cp .env.example .env && docker compose up -d`. La
+pile monte deux services : l'appliance `heaven`, qui ne publie aucun port, et
+`web`, le nginx servi sur `http://<hote>:8080` (`HEAVEN_WEB_PORT`) qui relaie
+`/api/` vers elle.
 
 En conteneur, `heaven.toml` devient facultatif : toute la configuration se lit
 dans l'environnement (`HEAVEN_SOURCES`, `HEAVEN_REPOSITORY`, `HEAVEN_EXCLUDES`,
@@ -118,8 +121,8 @@ depuis un conteneur jetable, droits d'accès.
 
 ### Déploiement continu
 
-Un push sur `main` construit l'image, la publie sur GHCR, puis redéploie la
-pile par l'API de Portainer — `.github/workflows/docker.yml` puis
+Un push sur `main` construit les images — l'appliance et l'interface web —, les
+publie sur GHCR, puis redéploie la pile par l'API de Portainer — `.github/workflows/docker.yml` puis
 `.github/workflows/deploy.yml`. Le second tourne sur un runner auto-hébergé, et
 c'est obligé : Portainer n'expose son API que sur le LAN, sans ingress publique.
 

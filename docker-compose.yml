@@ -50,15 +50,25 @@ services:
 
   # Seule porte d'entrée : l'interface, et /api/ relayé vers « heaven ».
   web:
-    build: web
+    build:
+      context: ./web
+      dockerfile: Dockerfile
     image: ${HEAVEN_WEB_IMAGE:-heaven-web:latest}
+    container_name: ${HEAVEN_WEB_CONTAINER_NAME:-heaven-web}
     restart: unless-stopped
     depends_on:
       - heaven
     ports:
       - "${HEAVEN_WEB_PORT:-8080}:80"
+    environment:
+      TZ: ${TZ:-Europe/Paris}
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   heaven-repository:
