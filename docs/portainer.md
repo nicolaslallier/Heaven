@@ -9,7 +9,19 @@ La pile porte deux services :
 | Service | Rôle | Port publié |
 | --- | --- | --- |
 | `heaven` | l'appliance : planification, sauvegardes, rétention, vérification ; API en lecture seule sur `:8000`, interne à la pile | aucun |
-| `web` | nginx : l'interface de consultation, et `/api/` relayé vers `heaven` | `HEAVEN_WEB_PORT` (8080) |
+| `heaven-web` | nginx : l'interface de consultation, et `/api/` relayé vers `heaven` | aucun — joint `infra-net`, exposé par le nginx d'Infra |
+
+La pile déployée (`deploy/portainer/stack.yml`) ne publie donc aucun port : elle
+rejoint le réseau `infra-net` de la pile
+[Infra](https://github.com/nicolaslallier/Infra), dont le nginx la sert sur
+<https://heaven.infra.famillelallier.net> (`nginx/conf.d/heaven.conf` là-bas).
+Le service s'y nomme `heaven-web` et non `web`, parce que Compose enregistre le
+nom du service comme alias DNS sur chaque réseau rejoint et qu'`infra-net` est
+partagé par plusieurs piles.
+
+`docker-compose.yml`, la pile construite depuis les sources, reste celle du
+poste de développement : elle publie `HEAVEN_WEB_PORT`, sur la boucle locale
+par défaut (`HEAVEN_WEB_BIND`).
 
 Tout se règle par variables d'environnement — aucun `heaven.toml` n'est requis.
 
@@ -56,7 +68,8 @@ toutes, puis en la redéployant à chaque image publiée. Section 6.
 | `HEAVEN_KEEP_LAST` / `_DAILY` / `_WEEKLY` / `_MONTHLY` | `7` / `7` / `4` / `6` | rétention |
 | `HEAVEN_NO_INITIAL_BACKUP` | *(vide)* | `true` : attendre la première échéance au lieu de sauvegarder au démarrage |
 | `TZ` | `Europe/Paris` | fuseau dans lequel `HEAVEN_SCHEDULE` est interprété |
-| `HEAVEN_WEB_PORT` | `8080` | port **hôte** de l'interface web : `http://<hote>:8080` |
+| `HEAVEN_WEB_PORT` | `8080` | port **hôte** de l'interface web — `docker-compose.yml` seulement, la pile déployée ne publie rien |
+| `HEAVEN_WEB_BIND` | `127.0.0.1` | interface hôte sur laquelle ce port est publié (`0.0.0.0` pour l'ouvrir au LAN) |
 | `HEAVEN_IMAGE` | `ghcr.io/nicolaslallier/heaven:latest` | image de l'appliance |
 | `HEAVEN_WEB_IMAGE` | `ghcr.io/nicolaslallier/heaven-web:latest` | image de l'interface web |
 
@@ -104,14 +117,20 @@ si le dépôt est corrompu, ou si l'échéance est dépassée de plus d'une heur
 
 ### L'interface web
 
-Elle répond sur `http://<hote>:8080` — l'hôte étant la machine Docker, pas
-Portainer. Le conteneur `heaven-web` a sa propre pastille de santé, qui
-interroge la page servie.
+Elle répond sur <https://heaven.infra.famillelallier.net>, servie par le nginx
+d'Infra ; la pile elle-même ne publie aucun port. Le conteneur `heaven-web` a sa
+propre pastille de santé, qui interroge la page servie.
+
+Sur un poste de développement (`make web`, `docker-compose.yml`), c'est
+`http://localhost:8080` — l'hôte étant la machine Docker, pas Portainer.
 
 L'interface affiche la santé de l'appliance, lue par `/api/health` ; `/api/`
-expose aussi la liste des instantanés (`/api/snapshots`), en lecture seule. Ce
-port, le seul de la pile, sert donc ces métadonnées sans authentification : le placer derrière le reverse proxy plutôt
-que sur le LAN reste le bon réflexe.
+expose aussi la liste des instantanés (`/api/snapshots`), en lecture seule.
+Heaven n'a pas d'authentification propre : ces métadonnées sont lisibles par
+quiconque atteint le vhost. C'est la raison pour laquelle la pile ne publie plus
+de port hôte — et, si la seule présence sur le LAN ne suffit pas comme barrière,
+le vhost d'Infra accepte la grille oauth2-proxy/Keycloak des autres applications
+(`nginx/conf.d/obsidian.conf` en est la recette).
 
 ## 4. Opérations courantes
 
