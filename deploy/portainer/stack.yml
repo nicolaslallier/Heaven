@@ -36,14 +36,25 @@ services:
         max-file: "3"
 
   # Seule porte d'entrée : l'interface, et /api/ relayé vers « heaven ».
-  web:
+  #
+  # Aucun port publié : la pile est jointe au réseau « infra-net » et c'est le
+  # nginx d'Infra qui l'expose, sur https://heaven.infra.famillelallier.net
+  # (Infra, nginx/conf.d/heaven.conf). L'API de Heaven n'a pas
+  # d'authentification propre : un port hôte la livrerait en lecture à tout le
+  # LAN. Le service s'appelle « heaven-web » et non « web » parce que Compose
+  # enregistre le nom du service comme alias DNS sur chaque réseau rejoint, et
+  # qu'« web » est trop générique pour un réseau partagé par plusieurs piles.
+  heaven-web:
     image: ${HEAVEN_WEB_IMAGE:-ghcr.io/nicolaslallier/heaven-web:latest}
     container_name: ${HEAVEN_WEB_CONTAINER_NAME:-heaven-web}
     restart: unless-stopped
     depends_on:
       - heaven
-    ports:
-      - "${HEAVEN_WEB_PORT:-8080}:80"
+    networks:
+      # « default » reste indispensable : c'est par là que nginx joint
+      # « heaven:8000 », qui ne sort pas de la pile.
+      - default
+      - infra-net
     environment:
       TZ: ${TZ:-Europe/Paris}
     security_opt:
@@ -53,6 +64,13 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  # Créé par la pile Infra (« make init » y crée le réseau) : déclaré externe
+  # ici, la pile refuse de démarrer s'il manque plutôt que d'en créer un
+  # homonyme isolé, où le nginx d'Infra ne verrait jamais « heaven-web ».
+  infra-net:
+    external: true
 
 volumes:
   heaven-repository:

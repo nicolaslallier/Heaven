@@ -96,8 +96,14 @@ docker run -d --name heaven --restart unless-stopped \
 
 Ou, avec la pile fournie : `cp .env.example .env && docker compose up -d`. La
 pile monte deux services : l'appliance `heaven`, qui ne publie aucun port, et
-`web`, le nginx servi sur `http://<hote>:8080` (`HEAVEN_WEB_PORT`) qui relaie
-`/api/` vers elle.
+`web`, le nginx qui relaie `/api/` vers elle et sert l'interface sur
+`http://localhost:8080` (`HEAVEN_WEB_PORT`, publié sur la boucle locale — voir
+`HEAVEN_WEB_BIND`).
+
+La pile déployée en production, elle, ne publie rien du tout :
+`deploy/portainer/stack.yml` rejoint le réseau `infra-net` de la pile
+[Infra](https://github.com/nicolaslallier/Infra), qui la sert sur
+<https://heaven.infra.famillelallier.net>.
 
 En conteneur, `heaven.toml` devient facultatif : toute la configuration se lit
 dans l'environnement (`HEAVEN_SOURCES`, `HEAVEN_REPOSITORY`, `HEAVEN_EXCLUDES`,
@@ -109,7 +115,7 @@ prioritaire (`HEAVEN_CONFIG` indique où le trouver).
 | --- | --- |
 | `Dockerfile` | L'image de l'appliance |
 | `docker-compose.yml` | Pile construite depuis les sources (`docker compose up -d`, Portainer « Repository ») |
-| `web/` | L'interface Vue et son nginx : seul port publié (`HEAVEN_WEB_PORT`), il relaie `/api/` vers Heaven (`HEAVEN_LISTEN`) |
+| `web/` | L'interface Vue et son nginx : il relaie `/api/` vers Heaven (`HEAVEN_LISTEN`) et sert l'interface |
 | `deploy/portainer/stack.yml` | Pile à base d'image publiée : éditeur web de Portainer, et déploiement continu |
 | `docker-compose.runner.yml` | Le runner GitHub Actions auto-hébergé qui déploie la pile |
 | `scripts/portainer-stack.sh` | Pilote la pile par l'API de Portainer (`make deploy`) |

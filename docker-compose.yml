@@ -49,6 +49,11 @@ services:
         max-file: "3"
 
   # Seule porte d'entrée : l'interface, et /api/ relayé vers « heaven ».
+  #
+  # Cette pile-ci se construit depuis les sources : c'est celle du poste de
+  # développement (« make web »), et elle publie donc un port. Sur l'hôte qui
+  # porte Infra, c'est deploy/portainer/stack.yml qui est déployé — il ne
+  # publie rien et passe par le nginx d'Infra.
   web:
     build:
       context: ./web
@@ -59,7 +64,10 @@ services:
     depends_on:
       - heaven
     ports:
-      - "${HEAVEN_WEB_PORT:-8080}:80"
+      # Sur la boucle locale par défaut : l'API de Heaven n'a pas
+      # d'authentification propre, et rien ici ne justifie de l'offrir au LAN.
+      # HEAVEN_WEB_BIND=0.0.0.0 pour une machine isolée, sans reverse proxy.
+      - "${HEAVEN_WEB_BIND:-127.0.0.1}:${HEAVEN_WEB_PORT:-8080}:80"
     environment:
       TZ: ${TZ:-Europe/Paris}
     security_opt:
