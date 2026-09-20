@@ -53,7 +53,7 @@ jobs:
       # entièrement de sources publiées : Portainer lit
       # deploy/portainer/stack.yml sur GitHub main, et la pile tire son image
       # sur GHCR. Rien de ce répertoire n'atteint le conteneur déployé.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
           # Ce runner détient la socket Docker ; ne pas laisser d'identifiant
