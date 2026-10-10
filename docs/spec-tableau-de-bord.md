@@ -129,8 +129,8 @@ tableau de bord peut agréger plusieurs instances : un onglet « Toutes » liste
 une ligne par instance (nom, indicateur, dernière sauvegarde, espace libre),
 un clic ouvre le tableau de bord complet de l'instance.
 
-Cible : **toutes** les machines à sauvegarder, chacune avec sa propre instance
-`heaven serve`. Configuration côté service web : variable `HEAVEN_INSTANCES`, liste
+*Repoussé : une seule machine aujourd'hui (§10).* Cible, le jour où il y en
+aura plusieurs : chacune avec sa propre instance `heaven serve`. Configuration côté service web : variable `HEAVEN_INSTANCES`, liste
 `nom=url` (ex. `maison=http://heaven:8000,nas=https://nas.lan/heaven`). Par
 défaut, une seule instance : celle de la pile (comportement actuel). Chaque
 instance garde son propre jeton (§6.1). Le relais se fait côté nginx, jamais
@@ -376,7 +376,7 @@ dernière vérification.
     au rouge.
 15. On peut parcourir un instantané de 500 000 fichiers sans charger toute la
     liste dans le navigateur.
-16. Avec deux instances configurées, l'onglet « Toutes » affiche l'état des
+16. *(Étape 9, si elle est faite.)* Avec deux instances configurées, l'onglet « Toutes » affiche l'état des
     deux ; une instance injoignable apparaît en gris sans masquer l'autre.
 
 ## 9. Plan de livraison
@@ -391,7 +391,7 @@ dernière vérification.
 | 6 | Notifications courriel via `smtp:25` (+ `heaven notify-test`, `heaven` sur `infra-net`) | 2 |
 | 7 | Notifications push via ntfy (jeton `make ntfy-provision`) et résumé hebdomadaire | 6 |
 | 8 | Détail d'un instantané : route d'API + arborescence | 3, 4 |
-| 9 | Vue multi-instances | 3, 4 |
+| 9 | Vue multi-instances *(facultative, repoussée : une seule machine)* | 3, 4 |
 | 10 | Documentation (`README.md`, `docs/portainer.md`, `.env.example`) | toutes |
 
 Chaque étape est livrable seule et ne casse pas la sonde de santé Docker.
@@ -401,28 +401,23 @@ Chaque étape est livrable seule et ne casse pas la sonde de santé Docker.
 | # | Question | Décision |
 | --- | --- | --- |
 | 1 | Notifications | Courriel + push téléphone, via les services de l'Infra (§7) |
-| 2 | Plusieurs dépôts / machines | Oui : vue agrégée de **toutes** les machines (§3.8) |
+| 2 | Plusieurs dépôts / machines | Une seule machine aujourd'hui ; la vue agrégée (§3.8) est conservée mais **repoussée** (étape 9, facultative) |
 | 3 | Seuil d'espace disque | Oui : `HEAVEN_DISK_WARN` / `HEAVEN_DISK_CRIT` (§3.7) |
 | 4 | Détail d'un instantané | Oui : arborescence dans l'interface (§3.6) |
 | 5 | Historique de 200 cycles | Oui (§5.2) |
-| 6 | Authentification | Comptes distincts, via Keycloak (§6.1) |
-| 7 | Fournisseur SMS | « Passerelle de l'Infra » : ntfy (push), faute de SMS (§7) |
+| 6 | Authentification | Comptes distincts, via Keycloak (§6.1) ; seul membre du groupe `heaven` au départ : Nicolas Lallier |
+| 7 | SMS ou push | Le push ntfy suffit ; pas de SMS (§7) |
 | 8 | Serveur SMTP | Relais `smtp:25` de l'Infra |
-| 9 | Destinataires | Une seule personne |
-| 10 | Résumé hebdomadaire | Oui, activé par défaut |
+| 9 | Destinataire des alertes | Une seule personne ; adresse **à définir** (`HEAVEN_NOTIFY_EMAIL_TO`, vide = courriel désactivé) |
+| 10 | Résumé hebdomadaire | Oui, activé par défaut, lundi 08:00 |
+| 11 | Téléphone abonné au push | Celui de Nicolas Lallier |
 
 ## 11. Questions ouvertes
 
-1. **SMS ou push ?** L'Infra n'a pas de passerelle SMS, seulement ntfy (push).
-   Le push suffit-il, ou faut-il un vrai SMS (nouveau fournisseur à ajouter à
-   l'Infra) ?
-2. **Qui reçoit les alertes ?** Adresse du destinataire, et personne à
-   abonner au sujet ntfy `heaven-alertes` sur son téléphone.
-3. **Comptes Keycloak** : quelles personnes dans le groupe `heaven`, et dans
-   quel realm (`infra` supposé) ?
-4. **Livraison du push sur iPhone** : sans `upstream-base-url` côté Infra, iOS
-   reçoit les notifications en retard (Android F-Droid : instantané). Quel
-   téléphone est concerné ?
-5. **Machines** : combien, lesquelles, et chacune peut-elle joindre le
-   `heaven.infra…` de l'Infra (ou faut-il un VPN) ?
-6. **Jour et heure du résumé** : lundi 08:00 convient-il ?
+1. **Adresse du destinataire** des courriels d'alerte : à définir avant
+   l'étape 6. Sans elle, seul le push fonctionne.
+2. **Système du téléphone** (Android ou iPhone) : sans `upstream-base-url`
+   côté Infra, iOS reçoit les push en retard ; Android (F-Droid) les reçoit
+   instantanément. À confirmer avant l'étape 7.
+3. **Multi-instances** : à reprendre le jour où une deuxième machine
+   sauvegardée apparaît.
