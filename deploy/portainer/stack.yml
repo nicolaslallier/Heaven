@@ -10,7 +10,9 @@ services:
     container_name: ${HEAVEN_CONTAINER_NAME:-heaven}
     restart: unless-stopped
     environment:
-      HEAVEN_SOURCES: ${HEAVEN_SOURCES:-/sources}
+      # /portainer-data : les données de Portainer lui-même (compte admin, définition
+      # des piles, environnements), en plus des sources de l'hôte.
+      HEAVEN_SOURCES: ${HEAVEN_SOURCES:-/sources:/portainer-data}
       HEAVEN_REPOSITORY: ${HEAVEN_REPOSITORY:-/repository}
       HEAVEN_EXCLUDES: ${HEAVEN_EXCLUDES:-*.tmp,__pycache__,node_modules,.venv}
       HEAVEN_SCHEDULE: ${HEAVEN_SCHEDULE:-02:30}
@@ -37,6 +39,10 @@ services:
       HEAVEN_DISK_CRIT: ${HEAVEN_DISK_CRIT:-10}
     volumes:
       - ${HEAVEN_SOURCES_PATH:-/srv}:/sources:ro
+      # Le volume de l'instance Portainer de l'Infra, en lecture seule. Un autre
+      # Portainer sur le même démon : un volume externe de plus, monté sous un
+      # nom distinct (/portainer-data-2), ajouté à HEAVEN_SOURCES.
+      - portainer-data:/portainer-data:ro
       - ${HEAVEN_REPOSITORY_PATH:-heaven-repository}:/repository
       - heaven-state:/var/lib/heaven
     networks:
@@ -90,5 +96,11 @@ networks:
     external: true
 
 volumes:
+  # Créé par « make portainer-up » dans l'Infra ; externe pour la même raison
+  # qu'infra-net : le monter sous un nom vide créerait un volume homonyme vide
+  # et sauvegarderait le vide sans le dire.
+  portainer-data:
+    name: ${PORTAINER_DATA_VOLUME:-infra_portainer-data}
+    external: true
   heaven-repository:
   heaven-state:
