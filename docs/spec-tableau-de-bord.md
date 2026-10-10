@@ -342,6 +342,30 @@ dernière vérification.
 | `HEAVEN_NOTIFY_REPEAT` | `24h` | rappel d'un problème qui dure |
 | `HEAVEN_NOTIFY_WEEKLY` | `mon@08:00` | résumé hebdomadaire ; vide pour le couper |
 
+### 7.4 iPhone
+
+iOS n'autorise pas une application à garder une connexion ouverte en arrière-
+plan : un serveur ntfy auto-hébergé ne peut réveiller l'iPhone que par le
+service de notification d'Apple (APNs). Or la config actuelle de l'Infra
+(`ntfy/server.yml`) laisse `upstream-base-url` désactivé : sur iPhone, les
+alertes n'arriveraient qu'en retard, voire pas, ce qui défait l'intérêt du
+push pour un état rouge.
+
+Prérequis côté **Infra** (hors de ce dépôt) :
+
+- Activer `upstream-base-url: "https://ntfy.sh"`. Seul un identifiant de
+  message (hachage du sujet, jamais le contenu) transite par ntfy.sh, qui sert
+  de relais vers APNs. Le contenu des alertes reste sur le serveur de l'Infra.
+- Sur l'iPhone : installer l'application ntfy, ajouter le serveur
+  `https://ntfy.infra.famillelallier.net` avec le compte humain ntfy, puis
+  s'abonner au sujet `heaven-alertes`. Accès hors du LAN : il faut un VPN (pas
+  de ntfy exposé sur Internet, voir l'Infra).
+- Pour les alertes **urgentes** (dépôt corrompu), la priorité `urgent` de ntfy
+  permet de passer outre le mode « Ne pas déranger » si le réglage est activé
+  dans l'application.
+
+Le courriel reste le canal de secours si le push est en retard.
+
 ## 8. Critères d'acceptation
 
 1. Avec un état `ok`, la page affiche l'indicateur vert, la date de la
@@ -408,16 +432,14 @@ Chaque étape est livrable seule et ne casse pas la sonde de santé Docker.
 | 6 | Authentification | Comptes distincts, via Keycloak (§6.1) ; seul membre du groupe `heaven` au départ : Nicolas Lallier |
 | 7 | SMS ou push | Le push ntfy suffit ; pas de SMS (§7) |
 | 8 | Serveur SMTP | Relais `smtp:25` de l'Infra |
-| 9 | Destinataire des alertes | Une seule personne ; adresse **à définir** (`HEAVEN_NOTIFY_EMAIL_TO`, vide = courriel désactivé) |
+| 9 | Destinataire des alertes | Une seule personne : `nicolas.lallier@famillelallier.net`, saisi dans `HEAVEN_NOTIFY_EMAIL_TO` (variable de la pile, vide = courriel désactivé) |
 | 10 | Résumé hebdomadaire | Oui, activé par défaut, lundi 08:00 |
-| 11 | Téléphone abonné au push | Celui de Nicolas Lallier |
+| 11 | Téléphone abonné au push | iPhone de Nicolas Lallier (voir §7.4) |
 
 ## 11. Questions ouvertes
 
-1. **Adresse du destinataire** des courriels d'alerte : à définir avant
-   l'étape 6. Sans elle, seul le push fonctionne.
-2. **Système du téléphone** (Android ou iPhone) : sans `upstream-base-url`
-   côté Infra, iOS reçoit les push en retard ; Android (F-Droid) les reçoit
-   instantanément. À confirmer avant l'étape 7.
-3. **Multi-instances** : à reprendre le jour où une deuxième machine
+1. **Relais ntfy.sh pour l'iPhone** (§7.4) : accepter d'activer
+   `upstream-base-url: https://ntfy.sh` dans la config ntfy de l'Infra ?
+   Sans cela, les alertes arrivent en retard sur iPhone.
+2. **Multi-instances** : à reprendre le jour où une deuxième machine
    sauvegardée apparaît.
