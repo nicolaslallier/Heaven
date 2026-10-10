@@ -161,3 +161,26 @@ def test_corruption_stays_red_until_a_verification_passes() -> None:
     assert status.evaluate(state, NOW, GRACE).kind == "corrupted"
     state["last_verify"] = {"ok": True}
     assert status.evaluate(state, NOW, GRACE).status == "ok"
+
+
+def test_push_only_ignores_email_only_kinds_without_failing(tmp_path: Path) -> None:
+    outbox, memory = Outbox(), {}
+    config = notify.NotifyConfig(ntfy_token="t", weekly="")
+    notifier = notify.Notifier(
+        config, tmp_path, GRACE, lambda _m: None,
+        email=outbox.email, push=outbox.push, disk=lambda *_args: None,
+    )  # fmt: skip
+    assert notifier.check(_state(warnings=1), memory, NOW)
+    assert memory["kind"] == "warnings" and "last_result" not in memory
+    assert "last_attempt" not in memory and "retry_at" not in memory
+    assert not notifier.check(_state(warnings=1), memory, NOW + timedelta(minutes=1))
+    assert outbox.pushes == []
+
+
+def test_try_catches_http_client_errors(tmp_path: Path) -> None:
+    import http.client
+
+    def broken(*_args: object) -> None:
+        raise http.client.RemoteDisconnected("coupé")
+
+    assert "coupé" in str(_notifier(tmp_path, Outbox())._try("push", broken))

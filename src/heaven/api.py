@@ -8,6 +8,7 @@ le port n'est joignable que depuis le réseau de la pile.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import urllib.parse
 from datetime import datetime, timedelta
@@ -21,6 +22,7 @@ from .repository import Repository
 from .scanner import FileEntry
 
 HEALTH_GRACE = timedelta(hours=1)
+MAX_CONCURRENT = 16  # requêtes simultanées ; au-delà, 503 plutôt qu'un fil de plus
 DEFAULT_PAGE = 200
 MAX_PAGE = 1000
 
@@ -64,11 +66,15 @@ def browse(snapshot: Snapshot, query: dict[str, str]) -> dict[str, object]:
 
 
 def _describe(entry: FileEntry, name: str) -> dict[str, object]:
+    try:
+        mtime: str | None = datetime.fromtimestamp(entry.mtime).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):  # date absurde dans un manifeste
+        mtime = None
     return {
         "name": name,
         "type": entry.kind,
         "size": entry.size,
-        "mtime": datetime.fromtimestamp(entry.mtime).isoformat(timespec="seconds"),
+        "mtime": mtime,
         "mode": format(entry.mode & 0o7777, "04o"),
     }
 
@@ -175,8 +181,25 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
         "/api/repository": lambda _query: repository_info(),
     }
 
+    slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            if not slots.acquire(blocking=False):
+                self._send(503, {"error": "serveur occupé, réessayez"})
+                return
+            try:
+                self._get()
+            except Exception as error:  # noqa: BLE001 - jamais de fil qui meurt en silence
+                print(f"api : erreur inattendue sur {self.path} : {error!r}", file=sys.stderr)
+                try:
+                    self._send(500, {"error": "erreur interne"})
+                except OSError:
+                    pass  # client parti
+            finally:
+                slots.release()
+
+        def _get(self) -> None:
             path, _, raw_query = self.path.partition("?")
             query = {k: v[0] for k, v in urllib.parse.parse_qs(raw_query).items()}
             route = routes.get(path)

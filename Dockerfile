@@ -7,12 +7,16 @@
 # (HEAVEN_SOURCES, HEAVEN_REPOSITORY, HEAVEN_SCHEDULE…) : aucun fichier de
 # configuration n'est nécessaire. Voir docs/portainer.md.
 
+# Tags d'image conservés (python:3.13-slim) pour recevoir les correctifs de
+# sécurité à chaque reconstruction. Pour un build reproductible, figer par digest :
+#   docker buildx imagetools inspect python:3.13-slim   # relever « Digest: sha256:… »
+# puis écrire  FROM python:3.13-slim@sha256:<digest>  (aux deux FROM ci-dessous).
 FROM python:3.13-slim AS builder
 
 WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m pip install --no-cache-dir build \
+RUN python -m pip install --no-cache-dir build==1.2.2 \
     && python -m build --wheel --outdir /dist
 
 FROM python:3.13-slim
@@ -56,5 +60,9 @@ VOLUME ["/repository", "/var/lib/heaven"]
 HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
     CMD ["heaven", "health"]
 
+# Le conteneur tourne volontairement en root (pas de USER) : les volumes
+# existants du dépôt et de l'état appartiennent à root, et un utilisateur non
+# privilégié ne pourrait plus y écrire sans chown manuel. Les sources restent
+# protégées par leur montage en lecture seule.
 ENTRYPOINT ["heaven"]
 CMD ["serve"]
