@@ -78,3 +78,31 @@ def test_api_serves_history_repository_and_status(config: Config, tmp_path: Path
         assert refused.value.code == 405
     finally:
         server.shutdown()
+
+
+def test_api_browses_a_snapshot_folder_by_folder(config: Config, tmp_path: Path) -> None:
+    snapshot = engine.backup(config).snapshot
+    server = api.start("127.0.0.1:0", config.repository, tmp_path / "state.json")
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        code, root = _get(base, "/api/snapshots/latest/files")
+        assert code == 200 and root["snapshot"] == snapshot.id
+        assert [(e["name"], e["type"]) for e in root["entries"]] == [("data", "dir")]
+
+        _, top = _get(base, "/api/snapshots/latest/files?path=data")
+        assert [e["name"] for e in top["entries"]][0] == "docs"
+        assert "copie-de-a.txt" in [e["name"] for e in top["entries"]]
+
+        code, docs = _get(base, "/api/snapshots/latest/files?path=data/docs")
+        assert [e["name"] for e in docs["entries"]] == ["a.txt", "b.txt"]
+        assert docs["entries"][0]["size"] > 0 and len(docs["entries"][0]["mode"]) == 4
+
+        code, page = _get(base, "/api/snapshots/latest/files?path=data/docs&limit=1&offset=1")
+        assert page["total"] == 2 and [e["name"] for e in page["entries"]] == ["b.txt"]
+
+        code, found = _get(base, "/api/snapshots/latest/files?q=B.TXT")
+        assert [e["name"] for e in found["entries"]] == ["data/docs/b.txt"]
+
+        assert _get(base, "/api/snapshots/inconnu/files")[0] == 404
+    finally:
+        server.shutdown()

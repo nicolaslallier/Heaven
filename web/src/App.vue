@@ -5,6 +5,7 @@ import SummaryCards from './components/SummaryCards.vue'
 import RunHistory from './components/RunHistory.vue'
 import RepositoryChart from './components/RepositoryChart.vue'
 import SnapshotList from './components/SnapshotList.vue'
+import SnapshotBrowser from './components/SnapshotBrowser.vue'
 
 const REFRESH_MS = 30_000
 
@@ -13,6 +14,7 @@ const repository = ref(null)
 const runs = ref([])
 const snapshots = ref([])
 const stale = ref('')
+const browsing = ref(null)
 let timer = null
 
 async function get(path) {
@@ -70,7 +72,8 @@ onBeforeUnmount(() => {
     <SummaryCards v-if="health.state" :health="health" :repository="repository" :runs="runs" />
     <RepositoryChart :runs="runs" />
     <RunHistory :runs="runs" />
-    <SnapshotList :snapshots="snapshots" />
+    <SnapshotBrowser v-if="browsing" :id="browsing" @close="browsing = null" />
+    <SnapshotList :snapshots="snapshots" @browse="browsing = $event" />
   </main>
   <p v-else class="loading">Connexion à Heaven…</p>
 </template>

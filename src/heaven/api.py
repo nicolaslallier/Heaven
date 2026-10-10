@@ -15,10 +15,62 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import notify, scheduler, status
-from .errors import ConfigError, HeavenError
+from .errors import ConfigError, HeavenError, SnapshotNotFoundError
+from .manifest import Snapshot
 from .repository import Repository
+from .scanner import FileEntry
 
 HEALTH_GRACE = timedelta(hours=1)
+DEFAULT_PAGE = 200
+MAX_PAGE = 1000
+
+
+def browse(snapshot: Snapshot, query: dict[str, str]) -> dict[str, object]:
+    """Un dossier d'un instantané (ou une recherche par nom), paginé, métadonnées seulement."""
+    path = query.get("path", "").strip("/")
+    try:
+        limit = max(1, min(int(query.get("limit", DEFAULT_PAGE)), MAX_PAGE))
+        offset = max(0, int(query.get("offset", 0)))
+    except ValueError:
+        limit, offset = DEFAULT_PAGE, 0
+    needle = query.get("q", "").lower()
+    prefix = path + "/" if path else ""
+
+    folders: dict[str, dict[str, object]] = {}
+    files: list[dict[str, object]] = []
+    for entry in snapshot.entries:
+        if not entry.path.startswith(prefix):
+            continue
+        rest = entry.path[len(prefix) :]
+        if not rest:
+            continue
+        if needle:
+            if needle in rest.rsplit("/", 1)[-1].lower() and entry.kind != "dir":
+                files.append(_describe(entry, rest))
+            continue
+        head, nested, _ = rest.partition("/")
+        if nested or entry.kind == "dir":  # les dossiers implicites comptent aussi
+            folders.setdefault(head, {"name": head, "type": "dir"})
+        else:
+            files.append(_describe(entry, head))
+
+    ordered = sorted(folders.values(), key=lambda item: str(item["name"]).lower())
+    ordered += sorted(files, key=lambda item: str(item["name"]).lower())
+    return {
+        "path": path,
+        "total": len(ordered),
+        "entries": ordered[offset : offset + limit],
+    }
+
+
+def _describe(entry: FileEntry, name: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "type": entry.kind,
+        "size": entry.size,
+        "mtime": datetime.fromtimestamp(entry.mtime).isoformat(timespec="seconds"),
+        "mode": format(entry.mode & 0o7777, "04o"),
+    }
 
 
 def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServer:
@@ -96,6 +148,19 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
             for snapshot in Repository.open(repository).list_snapshots()
         ]
 
+    cache: dict[str, tuple[float, Snapshot]] = {}
+
+    def snapshot_files(snapshot_ref: str, query: dict[str, str]) -> dict[str, object]:
+        repo = Repository.open(repository)
+        resolved = repo.resolve_snapshot_id(snapshot_ref)
+        # Un manifeste de 500 000 fichiers pèse lourd à relire : on garde le dernier.
+        stamp = repo.snapshot_path(resolved).stat().st_mtime
+        cached = cache.get(resolved)
+        if cached is None or cached[0] != stamp:
+            cache.clear()
+            cache[resolved] = (stamp, repo.load_snapshot(resolved))
+        return {"snapshot": resolved, **browse(cache[resolved][1], query)}
+
     routes = {
         "/api/health": lambda _query: health(),
         "/api/snapshots": lambda _query: snapshots(),
@@ -108,11 +173,22 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
             path, _, raw_query = self.path.partition("?")
             query = {k: v[0] for k, v in urllib.parse.parse_qs(raw_query).items()}
             route = routes.get(path)
+            parts = path.split("/")
+            if (
+                route is None
+                and len(parts) == 5
+                and parts[:3] == ["", "api", "snapshots"]
+                and parts[4] == "files"
+            ):
+                snapshot_ref = urllib.parse.unquote(parts[3])
+                route = lambda q: snapshot_files(snapshot_ref, q)  # noqa: E731
             if route is None:
                 self._send(404, {"error": "introuvable"})
                 return
             try:
                 self._send(200, route(query))
+            except SnapshotNotFoundError as error:
+                self._send(404, {"error": str(error)})
             except HeavenError as error:
                 # Pas encore d'état ou de dépôt : le service démarre, ce n'est pas un bogue.
                 self._send(503, {"error": str(error)})
