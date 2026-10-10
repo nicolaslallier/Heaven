@@ -149,17 +149,24 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
         ]
 
     cache: dict[str, tuple[float, Snapshot]] = {}
+    cache_lock = threading.Lock()
 
     def snapshot_files(snapshot_ref: str, query: dict[str, str]) -> dict[str, object]:
         repo = Repository.open(repository)
         resolved = repo.resolve_snapshot_id(snapshot_ref)
         # Un manifeste de 500 000 fichiers pèse lourd à relire : on garde le dernier.
-        stamp = repo.snapshot_path(resolved).stat().st_mtime
-        cached = cache.get(resolved)
-        if cached is None or cached[0] != stamp:
-            cache.clear()
-            cache[resolved] = (stamp, repo.load_snapshot(resolved))
-        return {"snapshot": resolved, **browse(cache[resolved][1], query)}
+        try:
+            stamp = repo.snapshot_path(resolved).stat().st_mtime
+        except OSError as error:  # supprimé par la rétention entre-temps
+            raise SnapshotNotFoundError(f"instantané introuvable : {snapshot_ref}") from error
+        with cache_lock:
+            cached = cache.get(resolved)
+            if cached is None or cached[0] != stamp:
+                cached = (stamp, repo.load_snapshot(resolved))
+                cache.clear()
+                cache[resolved] = cached
+            loaded = cached[1]
+        return {"snapshot": resolved, **browse(loaded, query)}
 
     routes = {
         "/api/health": lambda _query: health(),

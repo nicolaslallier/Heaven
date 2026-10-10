@@ -22,7 +22,7 @@ from .scheduler_time import parse_duration, previous_weekly
 
 Logger = Callable[[str], None]
 
-RETRY_DELAY = timedelta(minutes=15)
+RETRY_DELAY = timedelta(minutes=15)  # entre deux envois qui échouent
 PUSH_KINDS = {"failed": 4, "late": 4, "corrupted": 5, "disk_critical": 4}  # priorité ntfy
 LABELS = {
     "failed": "Échec de sauvegarde",
@@ -93,7 +93,7 @@ def send_email(config: NotifyConfig, subject: str, body: str) -> None:
     message = EmailMessage()
     message["From"], message["To"], message["Subject"] = config.email_from, config.email_to, subject
     message.set_content(body)
-    with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=15) as smtp:
+    with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=5) as smtp:
         smtp.send_message(message)
 
 
@@ -114,7 +114,7 @@ def send_push(config: NotifyConfig, title: str, body: str, priority: int, tags: 
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=15):  # noqa: S310
+    with urllib.request.urlopen(request, timeout=5):  # noqa: S310
         pass
 
 
@@ -154,24 +154,15 @@ class Notifier:
         kind = "ok" if verdict.kind in ("ok", "pending") else verdict.kind
         previous = str(memory.get("kind") or "ok")
 
-        if kind != previous:
-            self._transition(memory, verdict, kind, previous, now)
+        if not self._due(memory.get("retry_at"), timedelta(0), now):
+            pass  # un envoi vient d'échouer : on laisse le relais respirer
+        elif kind != previous:
+            self._deliver(memory, verdict, kind, now, reminder=False, recovered_from=previous)
         elif kind != "ok" and self._due(memory.get("sent_at"), self.config.repeat, now):
             self._deliver(memory, verdict, kind, now, reminder=True)
-        self._weekly(state, memory, now)
+        if self._due(memory.get("retry_at"), timedelta(0), now):
+            self._weekly(state, memory, now)
         return json.dumps(memory, sort_keys=True) != before
-
-    def _transition(
-        self,
-        memory: dict[str, object],
-        verdict: status_module.Verdict,
-        kind: str,
-        previous: str,
-        now: datetime,
-    ) -> None:
-        if not self._due(memory.get("attempt_at"), RETRY_DELAY, now):
-            return
-        self._deliver(memory, verdict, kind, now, reminder=False, recovered_from=previous)
 
     def _deliver(
         self,
@@ -194,39 +185,37 @@ class Notifier:
             priority = PUSH_KINDS.get(kind, 3)
         push = recovery or kind in PUSH_KINDS
         stamp = now.isoformat(timespec="seconds")
-        memory["attempt_at"] = stamp
-        delivered = self._send(memory, title, body, priority if push else 0, now)
-        if delivered:
+        outcomes = self._send(memory, title, body, priority if push else 0, now)
+        memory["last_attempt"] = stamp
+        memory["last_errors"] = [error for _channel, error in outcomes if error]
+        if any(error is None for _channel, error in outcomes):
             memory.update(kind=kind, sent_at=stamp)
+            memory["last_result"] = "ok" if all(e is None for _c, e in outcomes) else "partiel"
+        else:
+            memory["last_result"] = "échec"
 
     def _send(
         self, memory: dict[str, object], title: str, body: str, push_priority: int, now: datetime
-    ) -> bool:
-        results: list[bool] = []
-        errors: list[str] = []
+    ) -> list[tuple[str, str | None]]:
+        """Envoie sur chaque canal ; retourne (canal, erreur ou None)."""
+        outcomes: list[tuple[str, str | None]] = []
         if self.config.email_enabled:
-            results.append(
-                self._try("courriel", lambda: self._email(self.config, title, body), errors)
-            )
+            outcomes.append(("courriel", self._try("courriel", self._email, title, body)))
         if self.config.push_enabled and push_priority:
-            results.append(
-                self._try(
-                    "push", lambda: self._push(self.config, title, body, push_priority), errors
-                )
-            )
-        memory["last_result"] = "ok" if results and all(results) else "échec"
-        memory["last_attempt"] = now.isoformat(timespec="seconds")
-        memory["last_errors"] = errors
-        return any(results)
+            outcomes.append(("push", self._try("push", self._push, title, body, push_priority)))
+        if outcomes and all(error for _channel, error in outcomes):
+            memory["retry_at"] = (now + RETRY_DELAY).isoformat(timespec="seconds")
+        else:
+            memory.pop("retry_at", None)
+        return outcomes
 
-    def _try(self, channel: str, action: Callable[[], None], errors: list[str]) -> bool:
+    def _try(self, channel: str, send: Callable[..., None], *args: object) -> str | None:
         try:
-            action()
+            send(self.config, *args)
         except (OSError, smtplib.SMTPException, ValueError) as error:
             self.log(f"attention : notification {channel} non envoyée : {error}")
-            errors.append(f"{channel} : {error}")
-            return False
-        return True
+            return str(error)
+        return None
 
     @staticmethod
     def _due(moment: object, delay: timedelta, now: datetime) -> bool:
@@ -238,45 +227,36 @@ class Notifier:
             return True
 
     def _weekly(self, state: dict[str, object], memory: dict[str, object], now: datetime) -> None:
-        if not self.config.weekly:
+        # Le résumé est un courriel : sans courriel configuré, il n'y a rien à envoyer.
+        if not self.config.weekly or not self.config.email_enabled:
             return
         try:
             due = previous_weekly(self.config.weekly, now)
+            last = (
+                datetime.fromisoformat(str(memory["weekly_at"])) if "weekly_at" in memory else None
+            )
         except ValueError:
+            last = None
+            memory.pop("weekly_at", None)
+        stamp = due.isoformat(timespec="seconds")
+        if last is None:
+            memory["weekly_at"] = stamp  # pas de résumé au premier démarrage
             return
-        last = memory.get("weekly_at")
-        if not isinstance(last, str):
-            memory["weekly_at"] = due.isoformat(
-                timespec="seconds"
-            )  # pas de résumé au premier démarrage
+        if last >= due:
             return
-        if datetime.fromisoformat(last) >= due:
-            return
-        if self._send(
-            memory,
-            "Heaven : résumé de la semaine",
-            weekly_summary(state, self.repository, now),
-            0,
-            now,
-        ):
-            memory["weekly_at"] = due.isoformat(timespec="seconds")
+        summary = weekly_summary(state, self.repository, now)
+        outcomes = self._send(memory, "Heaven : résumé de la semaine", summary, 0, now)
+        if any(error is None for _channel, error in outcomes):
+            memory["weekly_at"] = stamp
 
     def test(self) -> list[str]:
         """Message d'essai sur chaque canal configuré ; retourne les erreurs."""
-        errors: list[str] = []
+        errors: list[str | None] = []
         if self.config.email_enabled:
-            self._try(
-                "courriel",
-                lambda: self._email(self.config, "Heaven : essai", "Message d'essai."),
-                errors,
-            )
+            errors.append(self._try("courriel", self._email, "Heaven : essai", "Message d'essai."))
         if self.config.push_enabled:
-            self._try(
-                "push",
-                lambda: self._push(self.config, "Heaven : essai", "Message d'essai.", 3),
-                errors,
-            )
-        return errors
+            errors.append(self._try("push", self._push, "Heaven : essai", "Message d'essai.", 3))
+        return [error for error in errors if error]
 
 
 def weekly_summary(state: dict[str, object], repository: Path, now: datetime) -> str:

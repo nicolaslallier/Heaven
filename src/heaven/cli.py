@@ -304,7 +304,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     state_path = args.state_file or scheduler.default_state_path()
     server = api.start(args.listen, config.repository, state_path) if args.listen else None
     notifier = notify.Notifier(
-        notify.NotifyConfig.from_env(), config.repository, api.HEALTH_GRACE, scheduler._log
+        notify.NotifyConfig.from_env(), config.repository, api.HEALTH_GRACE, scheduler.log_line
     )
     try:
         return scheduler.serve(

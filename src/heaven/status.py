@@ -95,6 +95,11 @@ def evaluate(
     warn, crit = disk_thresholds()
     free = disk.get("free_percent") if disk else None
 
+    verify = state.get("last_verify")
+    if isinstance(verify, dict) and verify.get("ok") is False:
+        # Tant qu'une vérification complète n'a pas réussi, un cycle ordinaire ne guérit rien.
+        return Verdict("error", "corrupted", "Dépôt corrompu : la dernière vérification a échoué")
+
     if status == "error":
         error = str(last.get("error") or "raison inconnue")
         kind = "corrupted" if error.startswith("dépôt corrompu") else "failed"

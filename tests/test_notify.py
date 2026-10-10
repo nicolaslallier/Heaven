@@ -122,3 +122,42 @@ def test_helpers() -> None:
     assert previous_weekly("mon@08:00", NOW) == datetime(2026, 10, 12, 8, 0)
     assert previous_weekly("mon@10:00", NOW) == datetime(2026, 10, 5, 10, 0)
     assert notify.mask_address("nicolas@famillelallier.net") == "n***@famillelallier.net"
+
+
+def test_failed_reminder_is_not_retried_every_tick(tmp_path: Path) -> None:
+    outbox, memory = Outbox(), {}
+    notifier = _notifier(tmp_path, outbox)
+    notifier.check(_state("error", "boum"), memory, NOW)
+    outbox.fail = True
+    later = NOW + timedelta(hours=25)
+    notifier.check(_state("error", "boum"), memory, later)  # rappel dû, relais en panne
+    outbox.fail = False
+    notifier.check(_state("error", "boum"), memory, later + timedelta(minutes=1))
+    assert len(outbox.emails) == 1  # pas de nouvelle tentative avant le délai
+    notifier.check(_state("error", "boum"), memory, later + timedelta(minutes=16))
+    assert len(outbox.emails) == 2
+
+
+def test_weekly_needs_email_and_tolerates_a_garbled_timestamp(tmp_path: Path) -> None:
+    outbox = Outbox()
+    only_push = notify.Notifier(
+        notify.NotifyConfig(ntfy_token="t", weekly="mon@08:00"),
+        tmp_path, GRACE, lambda _m: None, email=outbox.email, push=outbox.push,
+        disk=lambda *_a: None,
+    )  # fmt: skip
+    memory: dict = {}
+    only_push.check(_state(), memory, NOW + timedelta(days=8))
+    assert "last_result" not in memory and outbox.pushes == []
+
+    notifier = _notifier(tmp_path, outbox, weekly="mon@08:00")
+    memory = {"weekly_at": "garbage"}
+    notifier.check(_state(), memory, NOW)  # ne plante pas
+    assert memory["weekly_at"] == "2026-10-12T08:00:00"
+
+
+def test_corruption_stays_red_until_a_verification_passes() -> None:
+    state = _state()
+    state["last_verify"] = {"ok": False}
+    assert status.evaluate(state, NOW, GRACE).kind == "corrupted"
+    state["last_verify"] = {"ok": True}
+    assert status.evaluate(state, NOW, GRACE).status == "ok"

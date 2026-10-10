@@ -273,7 +273,7 @@ def serve(
 
     Retourne 0 si tous les cycles exécutés ont réussi, 1 si le dernier a échoué.
     """
-    emit = log or _log
+    emit = log or log_line
     stopping = stop if stop is not None else _install_signal_handlers(emit)
     state = state_path if state_path is not None else default_state_path()
 
@@ -471,7 +471,7 @@ def health(state_path: Path, grace: timedelta, now: datetime | None = None) -> t
     return True, f"dernier instantané {snapshot or '-'}, prochaine sauvegarde à {next_run}"
 
 
-def _log(message: str) -> None:
+def log_line(message: str) -> None:
     """Journal horodaté sur la sortie standard : c'est ce que Portainer affiche."""
     print(f"{datetime.now().isoformat(timespec='seconds')}  {message}", flush=True)
 

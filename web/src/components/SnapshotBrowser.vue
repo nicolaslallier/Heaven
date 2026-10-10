@@ -17,18 +17,21 @@ const crumbs = computed(() => {
   return parts.map((name, index) => ({ name, path: parts.slice(0, index + 1).join('/') }))
 })
 
+let latest = 0
 async function load() {
+  const ticket = ++latest
   const params = new URLSearchParams({ path: path.value, limit: PAGE, offset: offset.value })
   if (query.value) params.set('q', query.value)
   try {
     const response = await fetch(`/api/snapshots/${encodeURIComponent(props.id)}/files?${params}`)
     const body = await response.json()
+    if (ticket !== latest) return // une requête plus récente a pris le relais
     if (response.ok) {
       listing.value = body
       error.value = ''
     } else error.value = body.error
   } catch {
-    error.value = 'Heaven injoignable'
+    if (ticket === latest) error.value = 'Heaven injoignable'
   }
 }
 
@@ -42,8 +45,8 @@ let timer = null
 watch(query, () => {
   clearTimeout(timer)
   timer = setTimeout(() => {
-    offset.value = 0
-    load()
+    if (offset.value) offset.value = 0 // le watcher d'offset recharge
+    else load()
   }, 250)
 })
 watch([path, offset, () => props.id], load, { immediate: true })
