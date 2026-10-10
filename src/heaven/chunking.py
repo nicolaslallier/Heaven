@@ -37,7 +37,14 @@ _GEAR = _gear_table()
 
 
 def iter_chunks(stream: BinaryIO) -> Iterator[bytes]:
-    """Découpe le flux en blocs de MIN_SIZE à MAX_SIZE octets, selon son contenu."""
+    """Découpe le flux en blocs de MIN_SIZE à MAX_SIZE octets, selon son contenu.
+
+    Débit : environ 15 Mo/s (boucle Python octet par octet, mesuré sur une entrée
+    pseudo-aléatoire), donc le découpage borne la vitesse d'une sauvegarde `cdc`. Ne pas
+    « optimiser » en changeant l'algorithme : les frontières (figées par
+    `test_chunk_boundaries_are_frozen`) doivent rester identiques pour garder la
+    déduplication avec les blocs déjà stockés.
+    """
     gear = _GEAR
     buffer = b""
     start = 0

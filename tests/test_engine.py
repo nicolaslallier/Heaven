@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
+import os
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -8,9 +11,10 @@ import pytest
 
 from heaven import engine
 from heaven.config import Config, RetentionPolicy
-from heaven.errors import IntegrityError
+from heaven.errors import IntegrityError, RepositoryError
 from heaven.manifest import Snapshot
 from heaven.repository import Repository
+from heaven.scanner import FileEntry
 
 
 def test_backup_creates_snapshot_and_deduplicates(config: Config) -> None:
@@ -137,14 +141,14 @@ def test_read_file_rejects_unknown_path(config: Config) -> None:
 
 
 def test_backup_skips_unreadable_file(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
-    real_hash = engine.hash_file
+    real_add = Repository.add_object
 
-    def fake_hash(path: Path) -> str:
-        if path.name == "b.txt":
+    def fake_add(self: Repository, source: Path, compress: bool = True) -> tuple[str, int]:
+        if source.name == "b.txt":
             raise PermissionError("accès refusé")
-        return real_hash(path)
+        return real_add(self, source, compress)
 
-    monkeypatch.setattr(engine, "hash_file", fake_hash)
+    monkeypatch.setattr(Repository, "add_object", fake_add)
     result = engine.backup(config)
 
     assert [path for path, _ in result.skipped] == ["data/docs/b.txt"]
@@ -218,3 +222,137 @@ def test_restore_reports_unreadable_object(config: Config, tmp_path: Path) -> No
 
     with pytest.raises(IntegrityError, match="illisible"):
         engine.restore(config.repository, "latest", tmp_path / "out")
+
+
+def _truncate_gzip(config: Config) -> None:
+    repository = Repository.open(config.repository)
+    for digest in repository.iter_objects():
+        path = repository.object_path(digest)
+        assert path is not None
+        path.write_bytes(path.read_bytes()[:-12])  # flux tronqué : EOFError à la lecture
+
+
+def test_truncated_gzip_is_corruption(config: Config, tmp_path: Path) -> None:
+    engine.backup(config)
+    _truncate_gzip(config)
+
+    assert not engine.verify(config.repository).ok
+    with pytest.raises(IntegrityError):
+        engine.restore(config.repository, "latest", tmp_path / "out")
+    with pytest.raises(IntegrityError):
+        engine.read_file(config.repository, "latest", "data/docs/a.txt")
+
+
+def _forge_snapshot(config: Config, entries: list[FileEntry]) -> None:
+    engine.backup(config)
+    repository = Repository.open(config.repository)
+    snapshot = repository.load_snapshot("latest")
+    digest = snapshot.hashes["data/docs/a.txt"]
+    forged = Snapshot(id="zz-forge", created_at=snapshot.created_at, entries=entries)
+    forged.hashes = {entry.path: digest for entry in entries if entry.is_file}
+    repository.save_snapshot(forged)
+
+
+def test_restore_refuses_paths_escaping_target(config: Config, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    outside = tmp_path / "evade.txt"
+    _forge_snapshot(
+        config,
+        [
+            FileEntry(path="../evade.txt", kind="file"),
+            FileEntry(path=str(tmp_path / "abs.txt"), kind="file"),
+        ],
+    )
+
+    result = engine.restore(config.repository, "zz-forge", out)
+
+    assert not outside.exists() and not (tmp_path / "abs.txt").exists()
+    assert len(result.skipped) == 2 and result.files_restored == 0
+
+
+def test_restore_never_writes_through_restored_symlink(config: Config, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    elsewhere = tmp_path / "ailleurs"
+    elsewhere.mkdir()
+    _forge_snapshot(
+        config,
+        [
+            FileEntry(path="lien", kind="symlink", target=str(elsewhere)),
+            FileEntry(path="lien/x.txt", kind="file"),
+        ],
+    )
+
+    result = engine.restore(config.repository, "zz-forge", out)
+
+    assert list(elsewhere.iterdir()) == []
+    assert [path for path, _ in result.skipped] == ["lien/x.txt"]
+
+
+def test_incomplete_snapshot_json_is_a_repository_error(config: Config) -> None:
+    engine.backup(config)
+    repository = Repository.open(config.repository)
+    path = repository.snapshot_path(repository.list_snapshot_ids()[-1])
+    path.write_text('{"format": 1, "id": "x"}', encoding="utf-8")
+    with pytest.raises(RepositoryError):
+        repository.load_snapshot("latest")
+    path.write_text('{"format": 1, "id": "x", "created_at": "pas une date"}', encoding="utf-8")
+    with pytest.raises(RepositoryError):
+        repository.load_snapshot("latest")
+    # Un instantané illisible prive du cache mais n'empêche pas la sauvegarde.
+    assert engine.backup(config).files_total == 3
+
+
+def test_verify_repair_removes_corrupted_objects_and_backup_rewrites_them(config: Config) -> None:
+    engine.backup(config)
+    repository = Repository.open(config.repository)
+    digest = repository.load_snapshot("latest").hashes["data/docs/a.txt"]
+    path = repository.object_path(digest)
+    assert path is not None
+    path.write_bytes(gzip.compress(b"autre chose"))
+
+    result = engine.verify(config.repository, repair=True)
+
+    assert result.objects_removed == [digest]
+    assert not repository.has_object(digest)
+    engine.backup(config)
+    assert engine.verify(config.repository).ok
+
+
+def test_object_is_stored_under_digest_of_content_read(tmp_path: Path) -> None:
+    repository = Repository.initialize(tmp_path / "repo")
+    source = tmp_path / "f.bin"
+    source.write_bytes(b"contenu lu")
+
+    digest, _ = repository.add_object(source)
+
+    assert digest == hashlib.sha256(b"contenu lu").hexdigest()
+    with repository.open_object(digest) as reader:
+        assert reader.read() == b"contenu lu"
+
+
+def test_objects_and_snapshots_are_fsynced(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (calls.append(fd), real(fd))[1])
+
+    engine.backup(config)
+
+    # config + 2 contenus distincts + instantané : fichier et dossier chacun.
+    assert len(calls) >= 2 * 4
+
+
+def test_retention_buckets_use_local_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "Etc/GMT+5")  # UTC-5
+    time.tzset()
+    try:
+        # Deux jours en UTC, un seul jour local (15 mars 18h30 et 19h30).
+        snapshots = [
+            Snapshot(id="a", created_at="2026-03-15T23:30:00+00:00"),
+            Snapshot(id="b", created_at="2026-03-16T00:30:00+00:00"),
+        ]
+        policy = RetentionPolicy(keep_last=0, keep_daily=2)
+        kept = engine.select_snapshots_to_keep(snapshots, policy)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    assert [snapshot.id for snapshot in kept] == ["b"]

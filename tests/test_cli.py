@@ -66,6 +66,21 @@ def test_verify_returns_error_code_on_corruption(config: Config, tmp_path: Path)
     assert main(["verify", "--repository", str(config.repository)]) == 2
 
 
+def test_verify_repair_removes_corrupted_objects(config: Config) -> None:
+    from heaven import engine
+    from heaven.repository import Repository
+
+    engine.backup(config)
+    repository = Repository.open(config.repository)
+    digest = next(iter(repository.iter_objects()))
+    path = repository.object_path(digest)
+    assert path is not None
+    path.write_bytes(b"pas du gzip valide")
+
+    assert main(["verify", "--repair", "--repository", str(config.repository)]) == 2
+    assert not repository.has_object(digest)
+
+
 def test_missing_config_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("heaven.cli.find_config", lambda: None)

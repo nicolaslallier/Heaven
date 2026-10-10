@@ -6,6 +6,7 @@ il est journalisé et réessayé plus tard (contrat « au mieux » de l'Infra).
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import smtplib
@@ -186,6 +187,11 @@ class Notifier:
         push = recovery or kind in PUSH_KINDS
         stamp = now.isoformat(timespec="seconds")
         outcomes = self._send(memory, title, body, priority if push else 0, now)
+        if not outcomes:
+            # Aucun canal sollicité (ex. « push seul » et un avertissement) : ce n'est
+            # ni un envoi ni un échec. On mémorise l'état pour ne pas le rejouer.
+            memory.update(kind=kind, sent_at=stamp)
+            return
         memory["last_attempt"] = stamp
         memory["last_errors"] = [error for _channel, error in outcomes if error]
         if any(error is None for _channel, error in outcomes):
@@ -212,7 +218,7 @@ class Notifier:
     def _try(self, channel: str, send: Callable[..., None], *args: object) -> str | None:
         try:
             send(self.config, *args)
-        except (OSError, smtplib.SMTPException, ValueError) as error:
+        except (OSError, smtplib.SMTPException, http.client.HTTPException, ValueError) as error:
             self.log(f"attention : notification {channel} non envoyée : {error}")
             return str(error)
         return None
@@ -232,6 +238,10 @@ class Notifier:
             return
         try:
             due = previous_weekly(self.config.weekly, now)
+        except ValueError as error:  # HEAVEN_NOTIFY_WEEKLY mal écrit : pas de résumé, pas de crash
+            self.log(f"attention : résumé hebdomadaire désactivé : {error}")
+            return
+        try:
             last = (
                 datetime.fromisoformat(str(memory["weekly_at"])) if "weekly_at" in memory else None
             )

@@ -32,7 +32,10 @@ class Snapshot:
     @property
     def created(self) -> datetime:
         """Date de création, en UTC."""
-        return datetime.fromisoformat(self.created_at)
+        try:
+            return datetime.fromisoformat(self.created_at)
+        except (TypeError, ValueError) as exc:
+            raise RepositoryError(f"date de création invalide : {self.created_at!r}") from exc
 
     @property
     def total_size(self) -> int:
@@ -83,6 +86,16 @@ class Snapshot:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Snapshot:
+        """Reconstruit un instantané ; un JSON valide mais incomplet donne RepositoryError."""
+        try:
+            snapshot = cls._from_dict(raw)
+            snapshot.created  # noqa: B018 - valide la date dès le chargement
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise RepositoryError(f"instantané invalide ou incomplet : {exc!r}") from exc
+        return snapshot
+
+    @classmethod
+    def _from_dict(cls, raw: dict[str, Any]) -> Snapshot:
         version = raw.get("format")
         if version not in READABLE_FORMATS:
             raise RepositoryError(

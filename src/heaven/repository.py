@@ -4,23 +4,25 @@ from __future__ import annotations
 
 import contextlib
 import gzip
+import hashlib
 import io
 import json
 import os
-import shutil
+import re
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
 from .errors import RepositoryError, SnapshotNotFoundError
-from .hashing import ALGORITHM
+from .hashing import ALGORITHM, CHUNK_SIZE
 from .manifest import Snapshot
 
 REPOSITORY_FORMAT = 1
 CONFIG_FILE = "config.json"
 OBJECTS_DIR = "objects"
 SNAPSHOTS_DIR = "snapshots"
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 class Repository:
@@ -81,6 +83,8 @@ class Repository:
     # -- objets ----------------------------------------------------------
 
     def _object_paths(self, digest: str) -> tuple[Path, Path]:
+        if not _DIGEST.fullmatch(digest):  # un manifeste ne doit pas pouvoir viser hors du dépôt
+            raise RepositoryError(f"empreinte invalide : {digest!r}")
         directory = self.objects_dir / digest[:2]
         plain = directory / digest[2:]
         return plain, plain.with_name(plain.name + ".gz")
@@ -97,28 +101,43 @@ class Repository:
     def has_object(self, digest: str) -> bool:
         return self.object_path(digest) is not None
 
-    def add_object(self, source: Path, digest: str, compress: bool = True) -> int:
-        """Stocke le contenu de `source` sous son empreinte.
+    def add_object(self, source: Path, compress: bool = True) -> tuple[str, int]:
+        """Stocke le contenu de `source` sous l'empreinte de ce qui a été réellement lu.
 
-        Retourne le nombre d'octets écrits dans le dépôt, ou 0 si l'objet y était déjà.
+        L'empreinte est calculée pendant l'écriture : le fichier n'est lu qu'une fois, donc
+        une modification concurrente ne peut pas désynchroniser l'objet et son nom.
+        Retourne (empreinte, octets écrits dans le dépôt, 0 si l'objet y était déjà).
         """
-        if self.has_object(digest):
-            return 0
         with source.open("rb") as reader:
-            return self._store(digest, reader, compress)
+            return self._store(reader, compress)
 
     def add_bytes(self, payload: bytes, digest: str, compress: bool = True) -> int:
-        """Comme `add_object`, pour un contenu déjà en mémoire (un bloc)."""
+        """Comme `add_object`, pour un contenu déjà en mémoire (un bloc d'empreinte `digest`)."""
         if self.has_object(digest):
             return 0
-        return self._store(digest, io.BytesIO(payload), compress)
+        _, written = self._store(io.BytesIO(payload), compress)
+        return written
 
-    def _store(self, digest: str, reader: BinaryIO, compress: bool) -> int:
-        plain, compressed = self._object_paths(digest)
-        target = compressed if compress else plain
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _write_atomic_stream(target, reader, compress=compress)
-        return target.stat().st_size
+    def _store(self, reader: BinaryIO, compress: bool) -> tuple[str, int]:
+        self.objects_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(dir=self.objects_dir, prefix=".tmp-")
+        try:
+            with os.fdopen(descriptor, "wb") as raw:
+                digest = _copy_hashed(reader, raw, compress)
+                raw.flush()
+                os.fsync(raw.fileno())
+            plain, compressed = self._object_paths(digest)
+            if self.has_object(digest):
+                Path(temporary).unlink(missing_ok=True)
+                return digest, 0
+            target = compressed if compress else plain
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(temporary, target)
+            _fsync_directory(target.parent)
+            return digest, target.stat().st_size
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
 
     @contextlib.contextmanager
     def open_object(self, digest: str) -> Iterator[BinaryIO]:
@@ -137,8 +156,9 @@ class Repository:
             if not prefix_dir.is_dir():
                 continue
             for object_path in sorted(prefix_dir.iterdir()):
-                name = object_path.name.removesuffix(".gz")
-                yield prefix_dir.name + name
+                digest = prefix_dir.name + object_path.name.removesuffix(".gz")
+                if _DIGEST.fullmatch(digest):  # ignore les temporaires `.tmp-*` (écriture coupée)
+                    yield digest
 
     def remove_object(self, digest: str) -> int:
         """Supprime un objet et retourne les octets libérés (0 s'il était absent)."""
@@ -173,7 +193,7 @@ class Repository:
             raise SnapshotNotFoundError(f"instantané introuvable : {snapshot_id}") from exc
         except json.JSONDecodeError as exc:
             raise RepositoryError(f"instantané corrompu ({path}) : {exc}") from exc
-        return Snapshot.from_dict(raw)
+        return Snapshot.from_dict(raw)  # lève RepositoryError si le JSON est incomplet
 
     def list_snapshot_ids(self) -> list[str]:
         """Identifiants des instantanés, du plus ancien au plus récent."""
@@ -219,23 +239,38 @@ def _write_atomic(path: Path, payload: bytes) -> None:
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())  # le contenu doit être sur disque avant le renommage
         os.replace(temporary, path)
+        _fsync_directory(path.parent)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
 
 
-def _write_atomic_stream(path: Path, reader: BinaryIO, compress: bool) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+def _copy_hashed(reader: BinaryIO, raw: BinaryIO, compress: bool) -> str:
+    """Copie `reader` vers `raw` (compressé ou non) et retourne l'empreinte du contenu lu."""
+    digest = hashlib.new(ALGORITHM)
+    writer = gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) if compress else raw
     try:
-        with os.fdopen(descriptor, "wb") as raw:
-            if compress:
-                with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as writer:
-                    shutil.copyfileobj(reader, writer)
-            else:
-                shutil.copyfileobj(reader, raw)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+        while chunk := reader.read(CHUNK_SIZE):
+            digest.update(chunk)
+            writer.write(chunk)
+    finally:
+        if compress:
+            writer.close()
+    return digest.hexdigest()
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Rend durable l'entrée de répertoire créée par le renommage (best-effort)."""
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)

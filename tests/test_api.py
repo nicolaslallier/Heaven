@@ -49,7 +49,12 @@ def test_api_rejects_a_malformed_listen_address(tmp_path: Path) -> None:
         api.start("8000", tmp_path, tmp_path / "state.json")
 
 
-def test_api_serves_history_repository_and_status(config: Config, tmp_path: Path) -> None:
+def test_api_serves_history_repository_and_status(
+    config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Indépendant de l'espace libre réel de la machine qui lance les tests.
+    monkeypatch.setenv("HEAVEN_DISK_WARN", "0")
+    monkeypatch.setenv("HEAVEN_DISK_CRIT", "0")
     state = tmp_path / "state.json"
     scheduler.serve(
         config, scheduler.parse_schedule("1s"), state_path=state, max_cycles=2, log=lambda _m: None
@@ -106,3 +111,41 @@ def test_api_browses_a_snapshot_folder_by_folder(config: Config, tmp_path: Path)
         assert _get(base, "/api/snapshots/inconnu/files")[0] == 404
     finally:
         server.shutdown()
+
+
+def test_describe_survives_an_absurd_mtime() -> None:
+    entry = api.FileEntry(path="a", kind="file", size=1, mtime=1e30)
+    assert api._describe(entry, "a")["mtime"] is None
+
+
+def test_unexpected_error_gives_500_json(
+    config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_args: object) -> None:
+        raise RuntimeError("bogue")
+
+    monkeypatch.setattr(api.Repository, "open", boom)
+    server = api.start("127.0.0.1:0", config.repository, tmp_path / "state.json")
+    try:
+        code, body = _get(f"http://127.0.0.1:{server.server_address[1]}", "/api/snapshots")
+        assert (code, body) == (500, {"error": "erreur interne"})
+    finally:
+        server.shutdown()
+
+
+def test_saturated_server_answers_503(
+    config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "MAX_CONCURRENT", 0)
+    server = api.start("127.0.0.1:0", config.repository, tmp_path / "state.json")
+    try:
+        code, _ = _get(f"http://127.0.0.1:{server.server_address[1]}", "/api/snapshots")
+        assert code == 503
+    finally:
+        server.shutdown()
+
+
+def test_public_state_hides_notification_errors() -> None:
+    state = {"notify": {"last_result": "échec", "last_errors": ["refusé : n@example.net"]}}
+    assert api.public_state(state)["notify"] == {"last_result": "échec"}
+    assert "last_errors" in state["notify"]  # l'original reste intact

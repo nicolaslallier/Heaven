@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
+
+from heaven import scanner
 from heaven.scanner import is_excluded, scan, source_roots
 
 
@@ -55,3 +59,46 @@ def test_is_excluded_matches_basename_or_full_path() -> None:
     assert is_excluded("data/build/out", ["data/build"])
     assert not is_excluded("var/app.txt", ["*.log"])
     assert not is_excluded("data/builder/out", ["data/build"])
+
+
+def test_scan_skips_fifo_and_reports_it(tmp_path: Path) -> None:
+    source = tmp_path / "s"
+    source.mkdir()
+    (source / "ok.txt").write_text("x", encoding="utf-8")
+    os.mkfifo(source / "tube")
+    skipped: list[tuple[str, str]] = []
+
+    paths = [entry.path for entry in scan([source], skipped=skipped)]
+
+    assert "s/tube" not in paths and "s/ok.txt" in paths
+    assert [path for path, _ in skipped] == ["s/tube"]
+
+
+def test_scan_survives_directory_vanishing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "s"
+    (source / "d").mkdir(parents=True)
+    (source / "f.txt").write_text("x", encoding="utf-8")
+    real = scanner._entry_for
+
+    def flaky(path: Path, relative: str) -> scanner.FileEntry | None:
+        if path.name == "d":
+            raise FileNotFoundError(path)
+        return real(path, relative)
+
+    monkeypatch.setattr(scanner, "_entry_for", flaky)
+
+    assert [entry.path for entry in scan([source])] == ["s/f.txt"]
+
+
+def test_scan_follow_symlinks_does_not_loop(tmp_path: Path) -> None:
+    source = tmp_path / "s"
+    (source / "sub").mkdir(parents=True)
+    (source / "sub" / "f.txt").write_text("x", encoding="utf-8")
+    (source / "sub" / "boucle").symlink_to(source)  # lien vers un ancêtre
+    (source / "autre").symlink_to(source / "sub")  # lien non cyclique : on y descend
+
+    paths = [entry.path for entry in scan([source], follow_symlinks=True)]
+
+    assert "s/autre/f.txt" in paths
+    assert "s/sub/boucle" in paths  # gardé comme lien
+    assert not any(path.startswith("s/sub/boucle/") for path in paths)

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import os
+import zlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -12,7 +14,7 @@ from pathlib import Path
 from . import chunking
 from .config import Config, RetentionPolicy
 from .errors import IntegrityError, RepositoryError
-from .hashing import ALGORITHM, hash_file
+from .hashing import ALGORITHM, CHUNK_SIZE
 from .manifest import Snapshot, new_snapshot_id
 from .repository import Repository
 from .scanner import FileEntry, scan, source_roots
@@ -53,6 +55,8 @@ class VerifyResult:
     objects_checked: int = 0
     missing: list[tuple[str, str]] = field(default_factory=list)  # (instantané, chemin)
     corrupted: list[tuple[str, str]] = field(default_factory=list)
+    corrupt_objects: set[str] = field(default_factory=set)  # empreintes d'objets corrompus
+    objects_removed: list[str] = field(default_factory=list)  # supprimés par `repair`
 
     @property
     def ok(self) -> bool:
@@ -96,7 +100,9 @@ def backup(
     previous = None if full else _previous_snapshot(repository)
     previous_entries = {item.path: item for item in previous.entries} if previous else {}
 
-    for entry in scan(config.sources, config.excludes, config.follow_symlinks):
+    for entry in scan(
+        config.sources, config.excludes, config.follow_symlinks, skipped=result.skipped
+    ):
         if not entry.is_file:
             snapshot.entries.append(entry)
             continue
@@ -110,8 +116,8 @@ def backup(
             elif config.chunking == "cdc" and entry.size > chunking.THRESHOLD:
                 stored = _store_chunked(repository, source_path, entry, snapshot, config, result)
             else:
-                digest = hash_file(source_path)
-                stored = repository.add_object(source_path, digest, compress=config.compress)
+                # L'empreinte est calculée pendant l'écriture : le contenu stocké est celui haché.
+                digest, stored = repository.add_object(source_path, compress=config.compress)
                 snapshot.hashes[entry.path] = digest
         except OSError as exc:
             # Un fichier illisible ne doit pas faire échouer toute la sauvegarde.
@@ -212,8 +218,14 @@ def restore(
     result = RestoreResult()
     selected = _select_entries(snapshot.entries, paths)
 
+    root = target.resolve()
     for entry in selected:
         destination = target / entry.path
+        # Une entrée dont la destination sortirait de `target` (.., chemin absolu, ou lien
+        # symbolique restauré plus tôt) est ignorée et signalée, sans faire échouer le reste.
+        if not _is_inside(root, destination, entry.kind == "dir"):
+            result.skipped.append((entry.path, "chemin hors de la destination"))
+            continue
         if entry.kind == "dir":
             destination.mkdir(parents=True, exist_ok=True)
             result.dirs_created += 1
@@ -239,7 +251,7 @@ def restore(
                     with repository.open_object(digest) as reader:
                         while chunk := reader.read(1024 * 1024):
                             writer.write(chunk)
-        except OSError as exc:
+        except (OSError, EOFError, zlib.error) as exc:
             destination.unlink(missing_ok=True)
             raise IntegrityError(
                 f"contenu illisible pour « {entry.path} » (instantané {snapshot.id}) : {exc}"
@@ -257,18 +269,33 @@ def restore(
         reverse=True,
     ):
         destination = target / entry.path
-        if destination.is_dir():
+        if _is_inside(root, destination, True) and destination.is_dir():
             os.utime(destination, (entry.mtime, entry.mtime))
 
     return result
+
+
+def _is_inside(root: Path, destination: Path, is_dir: bool) -> bool:
+    """Vrai si l'écriture en `destination` reste sous `root` (déjà résolu).
+
+    Pour un fichier ou un lien, on résout le parent seulement : le dernier composant est
+    remplacé (jamais suivi). Un dossier, lui, est résolu en entier.
+    """
+    resolved = destination.resolve() if is_dir else destination.parent.resolve() / destination.name
+    return resolved == root or resolved.is_relative_to(root)
 
 
 def verify(
     repository_path: Path,
     snapshot_ref: str | None = None,
     progress: ProgressCallback | None = None,
+    repair: bool = False,
 ) -> VerifyResult:
-    """Vérifie que chaque contenu référencé est présent et conforme à son empreinte."""
+    """Vérifie que chaque contenu référencé est présent et conforme à son empreinte.
+
+    Avec `repair`, les objets trouvés corrompus sont supprimés du dépôt (les instantanés
+    restent) : la prochaine sauvegarde les réécrit si la source est intacte.
+    """
     repository = Repository.open(repository_path)
     snapshots = (
         [repository.load_snapshot(snapshot_ref)] if snapshot_ref else repository.list_snapshots()
@@ -284,12 +311,18 @@ def verify(
                 continue
             chunked = path in snapshot.blocks
             if not chunked and digests[0] in verified:
+                if digests[0] in result.corrupt_objects:
+                    result.corrupted.append((snapshot.id, path))
                 continue
             if not _verify_file(repository, digests, whole, chunked, verified, result):
                 result.corrupted.append((snapshot.id, path))
             if progress:
                 progress(path)
 
+    if repair:
+        for digest in sorted(result.corrupt_objects):
+            if repository.remove_object(digest):
+                result.objects_removed.append(digest)
     return result
 
 
@@ -311,13 +344,21 @@ def _verify_file(
                 while chunk := reader.read(1024 * 1024):
                     block.update(chunk)
                     total.update(chunk)
+        except (EOFError, zlib.error, gzip.BadGzipFile):
+            # Flux gzip tronqué (EOFError) ou invalide : objet corrompu, `repair` peut le retirer.
+            result.corrupt_objects.add(digest)
+            verified.add(digest)
+            return False
         except OSError:
-            # Objet illisible ou flux compressé tronqué : c'est une corruption.
+            # Erreur d'E/S ou de droits : peut-être passagère, donc corrompu pour le rapport
+            # mais jamais supprimé par `repair`. Pas dans `verified` : chaque instantané qui le
+            # référence doit le signaler.
             return False
         if digest not in verified:
             verified.add(digest)
             result.objects_checked += 1
         if block.hexdigest() != digest:
+            result.corrupt_objects.add(digest)
             ok = False
     return ok and (not chunked or total.hexdigest() == whole)
 
@@ -329,18 +370,21 @@ def read_file(repository_path: Path, snapshot_ref: str, path: str) -> bytes:
     digest = snapshot.hashes.get(path)
     if digest is None:
         raise IntegrityError(f"« {path} » n'est pas un fichier de l'instantané {snapshot.id}")
+    whole = hashlib.new(ALGORITHM)
+    parts: list[bytes] = []
     try:
-        parts: list[bytes] = []
         for object_digest in snapshot.object_digests(path):
             with repository.open_object(object_digest) as reader:
-                parts.append(reader.read())
-        payload = b"".join(parts)
-    except OSError as exc:
+                while chunk := reader.read(CHUNK_SIZE):
+                    whole.update(chunk)
+                    parts.append(chunk)
+    except (OSError, EOFError, zlib.error) as exc:
         raise IntegrityError(
             f"contenu illisible pour « {path} » (instantané {snapshot.id}) : {exc}"
         ) from exc
-    if hashlib.sha256(payload).hexdigest() != digest:
+    if whole.hexdigest() != digest:
         raise IntegrityError(f"contenu corrompu pour « {path} » (instantané {snapshot.id})")
+    payload = b"".join(parts)
     return payload
 
 
@@ -402,7 +446,7 @@ def select_snapshots_to_keep(
             continue
         seen: set[str] = set()
         for snapshot in ordered:
-            bucket = snapshot.created.strftime(period)
+            bucket = snapshot.created.astimezone().strftime(period)  # heure locale
             if bucket in seen:
                 continue
             seen.add(bucket)
