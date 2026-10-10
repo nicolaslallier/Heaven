@@ -111,6 +111,12 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify", help="vérifier l'intégrité du dépôt")
     verify.add_argument("snapshot", nargs="?", help="n'en vérifier qu'un (par défaut : tous)")
     verify.add_argument("--repository", type=Path, help="dépôt à vérifier")
+    verify.add_argument(
+        "--repair",
+        action="store_true",
+        help="supprimer du dépôt les objets corrompus (les instantanés restent ; "
+        "la prochaine sauvegarde réécrit les objets si la source est intacte)",
+    )
 
     prune = subparsers.add_parser("prune", help="appliquer la politique de rétention")
     prune.add_argument("--repository", type=Path, help="dépôt à nettoyer")
@@ -299,12 +305,18 @@ def _cmd_restore(args: argparse.Namespace) -> int:
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     repository_path = _resolve_repository(args)
-    result = engine.verify(repository_path, args.snapshot)
+    result = engine.verify(repository_path, args.snapshot, repair=args.repair)
     print(f"{result.snapshots_checked} instantané(s), {result.objects_checked} objet(s) vérifié(s)")
     for snapshot_id, path in result.missing:
         print(f"  MANQUANT  {snapshot_id}  {path}", file=sys.stderr)
     for snapshot_id, path in result.corrupted:
         print(f"  CORROMPU  {snapshot_id}  {path}", file=sys.stderr)
+    if result.objects_removed:
+        print(
+            f"{len(result.objects_removed)} objet(s) corrompu(s) supprimé(s) : "
+            "relancez une sauvegarde pour les réécrire",
+            file=sys.stderr,
+        )
     if result.ok:
         print("dépôt intègre")
         return 0

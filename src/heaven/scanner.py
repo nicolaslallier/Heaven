@@ -74,11 +74,17 @@ def scan(
     sources: Sequence[Path],
     excludes: Sequence[str] = (),
     follow_symlinks: bool = False,
+    skipped: list[tuple[str, str]] | None = None,
 ) -> Iterator[FileEntry]:
-    """Énumère le contenu des sources sous forme d'entrées d'instantané, triées par chemin."""
+    """Énumère le contenu des sources sous forme d'entrées d'instantané, triées par chemin.
+
+    Les éléments qui ne sont ni fichier, ni dossier, ni lien (FIFO, socket, périphérique)
+    sont ignorés ; si `skipped` est fourni, on y ajoute (chemin, raison) pour les signaler.
+    """
     entries: list[FileEntry] = []
+    ignored = skipped if skipped is not None else []
     for source, prefix in source_roots(sources).items():
-        entries.extend(_scan_source(source, prefix, excludes, follow_symlinks))
+        entries.extend(_scan_source(source, prefix, excludes, follow_symlinks, ignored))
     entries.sort(key=lambda entry: entry.path)
     yield from entries
 
@@ -88,35 +94,71 @@ def _scan_source(
     prefix: str,
     excludes: Sequence[str],
     follow_symlinks: bool,
+    skipped: list[tuple[str, str]],
 ) -> Iterator[FileEntry]:
     if source.is_file() and not source.is_symlink():
         if not is_excluded(prefix, excludes):
-            yield _entry_for(source, prefix)
+            entry = _checked_entry(source, prefix, skipped)
+            if entry is not None:
+                yield entry
         return
 
+    # Avec follow_symlinks, ancêtres (st_dev, st_ino) de chaque dossier parcouru : un lien
+    # vers l'un d'eux formerait une boucle, on le garde comme entrée sans y descendre.
+    ancestors: dict[str, frozenset[tuple[int, int]]] = {}
     for dirpath, dirnames, filenames in os.walk(source, followlinks=follow_symlinks):
         directory = Path(dirpath)
         relative_dir = _relative(directory, source, prefix)
+        if follow_symlinks and dirpath not in ancestors:
+            ancestors[dirpath] = frozenset({_identity(directory)})
 
         # Élaguer l'arborescence en place : os.walk ne descend pas dans les répertoires retirés.
         kept = []
         for name in sorted(dirnames):
             child = f"{relative_dir}/{name}" if relative_dir else name
-            if not is_excluded(child, excludes):
-                kept.append(name)
-                yield _entry_for(directory / name, child)
+            if is_excluded(child, excludes):
+                continue
+            try:
+                entry = _entry_for(directory / name, child)
+            except OSError:
+                continue  # dossier disparu pendant le parcours : on l'ignore
+            yield entry
+            if follow_symlinks:
+                try:
+                    identity = _identity(directory / name)
+                except OSError:
+                    continue
+                if identity in ancestors[dirpath]:
+                    continue  # boucle de liens : ne pas descendre
+                ancestors[os.path.join(dirpath, name)] = ancestors[dirpath] | {identity}
+            kept.append(name)
         dirnames[:] = kept
 
         for name in sorted(filenames):
             child = f"{relative_dir}/{name}" if relative_dir else name
             if is_excluded(child, excludes):
                 continue
-            path = directory / name
-            try:
-                yield _entry_for(path, child)
-            except OSError:
-                # Fichier disparu ou illisible pendant le parcours : on l'ignore.
-                continue
+            entry = _checked_entry(directory / name, child, skipped)
+            if entry is not None:
+                yield entry
+
+
+def _identity(path: Path) -> tuple[int, int]:
+    info = path.stat()
+    return info.st_dev, info.st_ino
+
+
+def _checked_entry(
+    path: Path, relative_path: str, skipped: list[tuple[str, str]]
+) -> FileEntry | None:
+    try:
+        entry = _entry_for(path, relative_path)
+    except OSError:
+        # Fichier disparu ou illisible pendant le parcours : on l'ignore.
+        return None
+    if entry is None:
+        skipped.append((relative_path, "type non pris en charge (FIFO, socket ou périphérique)"))
+    return entry
 
 
 def _relative(path: Path, source: Path, prefix: str) -> str:
@@ -125,10 +167,13 @@ def _relative(path: Path, source: Path, prefix: str) -> str:
     return "/".join((prefix, *parts)) if parts else prefix
 
 
-def _entry_for(path: Path, relative_path: str) -> FileEntry:
+def _entry_for(path: Path, relative_path: str) -> FileEntry | None:
+    """Décrit `path` sans suivre les liens ; None pour un type spécial (FIFO, socket, etc.)."""
     info = path.lstat()
     mode = stat.S_IMODE(info.st_mode)
     if stat.S_ISLNK(info.st_mode):
+        # Voulu : un lien (vers un fichier ou un dossier) est stocké comme lien, même avec
+        # follow_symlinks, qui ne fait que parcourir le contenu des dossiers liés.
         return FileEntry(
             path=relative_path,
             kind="symlink",
@@ -138,6 +183,8 @@ def _entry_for(path: Path, relative_path: str) -> FileEntry:
         )
     if stat.S_ISDIR(info.st_mode):
         return FileEntry(path=relative_path, kind="dir", mtime=info.st_mtime, mode=mode)
+    if not stat.S_ISREG(info.st_mode):
+        return None  # lire un FIFO bloquerait indéfiniment
     return FileEntry(
         path=relative_path,
         kind="file",

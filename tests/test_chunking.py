@@ -148,7 +148,7 @@ def _age(path: Path) -> None:
 def test_unchanged_files_are_not_reread(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     _age(config.sources[0])
     engine.backup(config)
-    monkeypatch.setattr(engine, "hash_file", lambda path: pytest.fail("relu"))
+    monkeypatch.setattr(Repository, "add_object", lambda *a, **k: pytest.fail("relu"))
 
     second = engine.backup(config)
 
@@ -191,3 +191,13 @@ def test_cache_is_ignored_when_an_object_is_missing(config: Config) -> None:
 
     assert second.files_cached == 2
     assert engine.verify(config.repository).ok
+
+
+def test_chunk_boundaries_are_frozen() -> None:
+    """Non-régression : changer ces tailles casserait la déduplication des blocs existants."""
+    data = random.Random(1234).randbytes(16 * 1024 * 1024)
+    sizes = [len(chunk) for chunk in chunking.iter_chunks(io.BytesIO(data))]
+    assert sizes == [
+        456501, 1888499, 620806, 2918840, 2730679, 1330938, 1238113,
+        824575, 514448, 402135, 413673, 1886605, 672280, 879124,
+    ]  # fmt: skip

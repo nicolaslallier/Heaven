@@ -40,6 +40,8 @@ class Config:
     sources: list[Path]
     repository: Path
     excludes: list[str] = field(default_factory=list)
+    # True : on descend dans les liens vers des dossiers (boucles détectées et ignorées).
+    # Les liens vers des fichiers restent stockés comme liens, jamais comme leur contenu.
     follow_symlinks: bool = False
     compress: bool = True
     chunking: str = "none"  # "cdc" : les gros fichiers sont découpés en blocs dédupliqués

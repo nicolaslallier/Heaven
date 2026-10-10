@@ -36,8 +36,10 @@ def test_add_object_deduplicates(tmp_path: Path) -> None:
     payload.write_bytes(b"contenu" * 100)
     digest = hash_file(payload)
 
-    first = repository.add_object(payload, digest)
-    second = repository.add_object(payload, digest)
+    first_digest, first = repository.add_object(payload)
+    second_digest, second = repository.add_object(payload)
+
+    assert first_digest == second_digest == digest
 
     assert first > 0
     assert second == 0
@@ -51,7 +53,7 @@ def test_object_roundtrip(tmp_path: Path, compress: bool) -> None:
     payload = tmp_path / "f.bin"
     payload.write_bytes(b"des donnees compressibles " * 50)
     digest = hash_file(payload)
-    repository.add_object(payload, digest, compress=compress)
+    assert repository.add_object(payload, compress=compress)[0] == digest
 
     with repository.open_object(digest) as reader:
         assert reader.read() == payload.read_bytes()
@@ -62,7 +64,7 @@ def test_remove_object_frees_space(tmp_path: Path) -> None:
     payload = tmp_path / "f.bin"
     payload.write_bytes(b"x" * 1000)
     digest = hash_file(payload)
-    repository.add_object(payload, digest)
+    repository.add_object(payload)
 
     assert repository.remove_object(digest) > 0
     assert not repository.has_object(digest)
