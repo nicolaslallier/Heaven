@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
 
-from . import __version__, api, engine, scheduler
+from . import __version__, api, engine, notify, scheduler
 from .config import ENV_PREFIX, Config, RetentionPolicy, config_from_env, find_config, load_config
 from .errors import HeavenError
 from .repository import Repository
@@ -143,6 +143,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="servir l'API en lecture seule sur « hôte:port » (derrière nginx)",
     )
 
+    subparsers.add_parser(
+        "notify-test", help="envoyer un message d'essai sur chaque canal de notification"
+    )
+
     health = subparsers.add_parser(
         "health", help="état du service planifié (sonde de santé du conteneur)"
     )
@@ -180,6 +184,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         "verify": _cmd_verify,
         "prune": _cmd_prune,
         "serve": _cmd_serve,
+        "notify-test": _cmd_notify_test,
         "health": _cmd_health,
     }
     return handlers[args.command](args)
@@ -298,6 +303,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     schedule = scheduler.parse_schedule(args.schedule)
     state_path = args.state_file or scheduler.default_state_path()
     server = api.start(args.listen, config.repository, state_path) if args.listen else None
+    notifier = notify.Notifier(
+        notify.NotifyConfig.from_env(), config.repository, api.HEALTH_GRACE, scheduler.log_line
+    )
     try:
         return scheduler.serve(
             config,
@@ -307,10 +315,29 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             verify_every=max(args.verify_every, 0),
             state_path=state_path,
             max_cycles=1 if args.once else None,
+            notifier=notifier if notifier.enabled else None,
         )
     finally:
         if server is not None:
             server.shutdown()
+
+
+def _cmd_notify_test(_args: argparse.Namespace) -> int:
+    notifier = notify.Notifier(
+        notify.NotifyConfig.from_env(),
+        Path("."),
+        api.HEALTH_GRACE,
+        lambda m: print(m, file=sys.stderr),
+    )
+    if not notifier.enabled:
+        print("aucun canal configuré (HEAVEN_NOTIFY_EMAIL_TO, HEAVEN_NTFY_TOKEN)", file=sys.stderr)
+        return 1
+    errors = notifier.test()
+    for error in errors:
+        print(f"échec : {error}", file=sys.stderr)
+    if not errors:
+        print("message d'essai envoyé")
+    return 1 if errors else 0
 
 
 def _cmd_health(args: argparse.Namespace) -> int:

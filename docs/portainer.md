@@ -132,6 +132,30 @@ de port hôte — et, si la seule présence sur le LAN ne suffit pas comme barri
 le vhost d'Infra accepte la grille oauth2-proxy/Keycloak des autres applications
 (`nginx/conf.d/obsidian.conf` en est la recette).
 
+## Tableau de bord et notifications
+
+L'interface affiche l'état global (vert / orange / rouge / gris), la dernière
+sauvegarde, la prochaine, la dernière vérification, la taille et l'espace libre
+du dépôt, l'historique des 30 derniers cycles et les instantanés. Elle se
+rafraîchit toutes les 30 s. L'historique (200 cycles) vit dans `state.json`.
+
+Le service prévient **une seule personne** quand l'état change (échec, retard,
+dépôt corrompu, disque bas ou critique, rétablissement), rappelle un problème
+qui dure toutes les 24 h et envoie un résumé le lundi à 08:00.
+
+| Variable | Rôle |
+| --- | --- |
+| `HEAVEN_NOTIFY_EMAIL_TO` | destinataire du courriel (vide : désactivé) |
+| `HEAVEN_NTFY_TOKEN` | jeton ntfy (vide : push désactivé) |
+| `HEAVEN_NTFY_TOPIC` | sujet ntfy, `heaven-alertes` par défaut |
+| `HEAVEN_SMTP_HOST` / `HEAVEN_SMTP_PORT` | relais de l'Infra, `smtp` / `25` |
+| `HEAVEN_NOTIFY_REPEAT` / `HEAVEN_NOTIFY_WEEKLY` | rappel et résumé |
+| `HEAVEN_DISK_WARN` / `HEAVEN_DISK_CRIT` | seuils d'espace libre, en % |
+
+`docker exec heaven heaven notify-test` envoie un message d'essai sur chaque
+canal configuré. L'Infra n'offre pas de passerelle SMS : le téléphone est
+prévenu par push ntfy (voir `docs/spec-tableau-de-bord.md` §7).
+
 ## 4. Opérations courantes
 
 Depuis *Containers* → `heaven` → *Console*, ou en ligne de commande :

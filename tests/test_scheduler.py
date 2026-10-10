@@ -255,3 +255,39 @@ def test_serve_reports_an_unusable_repository_at_startup(tree: Path, tmp_path: P
     assert code == 1
     assert any("dépôt inutilisable" in line for line in lines)
     assert (occupied / "des-donnees.txt").read_text(encoding="utf-8") == "déjà là\n"
+
+
+def test_history_is_kept_bounded_and_survives_restarts(config: Config, tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    schedule = parse_schedule("1s")
+    serve(config, schedule, state_path=state, max_cycles=2, log=lambda _m: None)
+    serve(config, schedule, state_path=state, max_cycles=1, log=lambda _m: None)
+    written = json.loads(state.read_text(encoding="utf-8"))
+    assert written["format"] == 2
+    assert len(written["history"]) == 3
+    assert written["repository"]["snapshots"] == 3
+    assert written["history"][0]["repository_bytes"] > 0
+
+
+def test_state_format_1_is_read_without_error(config: Config, tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    state.write_text(
+        json.dumps({"format": 1, "status": "ok", "last_run": {"status": "ok"}}), encoding="utf-8"
+    )
+    from heaven.scheduler import load_memory
+
+    memory = load_memory(state)
+    assert memory.history == [] and memory.last_run == {"status": "ok"}
+    serve(config, parse_schedule("1s"), state_path=state, max_cycles=1, log=lambda _m: None)
+    assert len(json.loads(state.read_text(encoding="utf-8"))["history"]) == 1
+
+
+def test_history_is_capped(tmp_path: Path) -> None:
+    from heaven.scheduler import HISTORY_LIMIT, CycleReport, Memory
+
+    memory = Memory()
+    for index in range(HISTORY_LIMIT + 5):
+        memory.record(CycleReport(started_at=str(index), status="ok"))
+    assert len(memory.history) == HISTORY_LIMIT and memory.history[0]["started_at"] == str(
+        HISTORY_LIMIT + 4
+    )
