@@ -6,6 +6,8 @@
 # L'interface est entièrement statique — aucune variable d'environnement, aucun
 # volume. Elle se déploie à côté de l'appliance : voir docs/portainer.md.
 
+# Tags conservés (correctifs de sécurité à chaque reconstruction). Pour figer :
+# `docker buildx imagetools inspect nginx:alpine`, puis FROM nginx:alpine@sha256:<digest>.
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
