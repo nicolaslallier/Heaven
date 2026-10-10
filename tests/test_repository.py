@@ -99,3 +99,13 @@ def test_load_snapshot_rejects_unknown_format(tmp_path: Path) -> None:
     path.write_text('{"format": 99, "id": "x", "created_at": "y"}', encoding="utf-8")
     with pytest.raises(RepositoryError, match="format d'instantané"):
         repository.load_snapshot("20260101T000000.000Z")
+
+
+def test_digest_cannot_escape_the_repository(tmp_path: Path) -> None:
+    repository = Repository.initialize(tmp_path / "repo")
+    with pytest.raises(RepositoryError):
+        repository.object_path("../../../etc/passwd")
+    leftover = repository.objects_dir / "ab" / ".tmp-xyz"
+    leftover.parent.mkdir(parents=True)
+    leftover.write_bytes(b"x")
+    assert list(repository.iter_objects()) == []  # un temporaire n'est pas un objet

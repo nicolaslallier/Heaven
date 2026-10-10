@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -21,6 +22,7 @@ REPOSITORY_FORMAT = 1
 CONFIG_FILE = "config.json"
 OBJECTS_DIR = "objects"
 SNAPSHOTS_DIR = "snapshots"
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 class Repository:
@@ -81,6 +83,8 @@ class Repository:
     # -- objets ----------------------------------------------------------
 
     def _object_paths(self, digest: str) -> tuple[Path, Path]:
+        if not _DIGEST.fullmatch(digest):  # un manifeste ne doit pas pouvoir viser hors du dépôt
+            raise RepositoryError(f"empreinte invalide : {digest!r}")
         directory = self.objects_dir / digest[:2]
         plain = directory / digest[2:]
         return plain, plain.with_name(plain.name + ".gz")
@@ -152,8 +156,9 @@ class Repository:
             if not prefix_dir.is_dir():
                 continue
             for object_path in sorted(prefix_dir.iterdir()):
-                name = object_path.name.removesuffix(".gz")
-                yield prefix_dir.name + name
+                digest = prefix_dir.name + object_path.name.removesuffix(".gz")
+                if _DIGEST.fullmatch(digest):  # ignore les temporaires `.tmp-*` d'une écriture interrompue
+                    yield digest
 
     def remove_object(self, digest: str) -> int:
         """Supprime un objet et retourne les octets libérés (0 s'il était absent)."""

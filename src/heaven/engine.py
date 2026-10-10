@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import os
 import zlib
@@ -343,9 +344,14 @@ def _verify_file(
                 while chunk := reader.read(1024 * 1024):
                     block.update(chunk)
                     total.update(chunk)
-        except (OSError, EOFError, zlib.error):
-            # Objet illisible ou flux gzip tronqué (EOFError) ou invalide : c'est une corruption.
+        except (EOFError, zlib.error, gzip.BadGzipFile):
+            # Flux gzip tronqué (EOFError) ou invalide : l'objet est corrompu, `repair` peut le retirer.
             result.corrupt_objects.add(digest)
+            verified.add(digest)
+            return False
+        except OSError:
+            # Erreur d'E/S ou de droits : peut-être passagère, donc corrompu pour le rapport
+            # mais jamais supprimé par `repair`.
             verified.add(digest)
             return False
         if digest not in verified:
