@@ -58,7 +58,8 @@ toutes, puis en la redéployant à chaque image publiée. Section 6.
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
 | `HEAVEN_SOURCES_PATH` | `/srv` | répertoire **hôte** monté en lecture seule sur `/sources` |
-| `HEAVEN_SOURCES` | `/sources` | sources vues du conteneur (séparées par `:` ou `,`) |
+| `HEAVEN_SOURCES` | `/sources:/portainer-data` | sources vues du conteneur (séparées par `:` ou `,`) ; `/portainer-data` est le volume de Portainer |
+| `PORTAINER_DATA_VOLUME` | `infra_portainer-data` | volume Docker de l'instance Portainer sauvegardée (monté en lecture seule) |
 | `HEAVEN_REPOSITORY_PATH` | `heaven-repository` | volume nommé, ou chemin hôte (`/mnt/nas/heaven`) |
 | `HEAVEN_REPOSITORY` | `/repository` | dépôt vu du conteneur |
 | `HEAVEN_EXCLUDES` | `*.tmp,__pycache__,node_modules,.venv` | motifs exclus |
@@ -72,6 +73,15 @@ toutes, puis en la redéployant à chaque image publiée. Section 6.
 | `HEAVEN_WEB_BIND` | `127.0.0.1` | interface hôte sur laquelle ce port est publié (`0.0.0.0` pour l'ouvrir au LAN) |
 | `HEAVEN_IMAGE` | `ghcr.io/nicolaslallier/heaven:latest` | image de l'appliance |
 | `HEAVEN_WEB_IMAGE` | `ghcr.io/nicolaslallier/heaven-web:latest` | image de l'interface web |
+
+Les données de Portainer lui-même (compte admin, définition des piles) sont
+sauvegardées avec le reste : la pile monte son volume `infra_portainer-data` en
+lecture seule sur `/portainer-data`. L'Infra n'héberge qu'une instance Portainer.
+Si `HEAVEN_SOURCES` est posée dans `HEAVEN_STACK_ENV`, y ajouter `:/portainer-data`.
+Pour une autre instance sur le même démon, déclarer son volume externe dans
+`stack.yml`, le monter sous un autre nom (`/portainer-data-2`) et l'ajouter à
+`HEAVEN_SOURCES`. La base de Portainer est copiée à chaud : en cas de doute à la
+restauration, arrêter Portainer avant de remplacer ses fichiers.
 
 Les chemins de `HEAVEN_SOURCES` sont ceux **du conteneur**. Pour sauvegarder
 plusieurs répertoires hôtes, ajouter les montages correspondants et les lister :
