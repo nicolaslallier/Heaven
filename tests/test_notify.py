@@ -184,3 +184,8 @@ def test_try_catches_http_client_errors(tmp_path: Path) -> None:
         raise http.client.RemoteDisconnected("coupé")
 
     assert "coupé" in str(_notifier(tmp_path, Outbox())._try("push", broken))
+
+
+def test_invalid_weekly_spec_does_not_crash(tmp_path: Path) -> None:
+    notifier = _notifier(tmp_path, Outbox(), weekly="lundi 8h")
+    notifier.check(_state(), {}, NOW)  # ne lève pas UnboundLocalError

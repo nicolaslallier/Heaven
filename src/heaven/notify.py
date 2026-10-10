@@ -238,6 +238,10 @@ class Notifier:
             return
         try:
             due = previous_weekly(self.config.weekly, now)
+        except ValueError as error:  # HEAVEN_NOTIFY_WEEKLY mal écrit : pas de résumé, pas de crash
+            self.log(f"attention : résumé hebdomadaire désactivé : {error}")
+            return
+        try:
             last = (
                 datetime.fromisoformat(str(memory["weekly_at"])) if "weekly_at" in memory else None
             )

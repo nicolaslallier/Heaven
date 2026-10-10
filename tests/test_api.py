@@ -143,3 +143,9 @@ def test_saturated_server_answers_503(
         assert code == 503
     finally:
         server.shutdown()
+
+
+def test_public_state_hides_notification_errors() -> None:
+    state = {"notify": {"last_result": "échec", "last_errors": ["refusé : n@example.net"]}}
+    assert api.public_state(state)["notify"] == {"last_result": "échec"}
+    assert "last_errors" in state["notify"]  # l'original reste intact

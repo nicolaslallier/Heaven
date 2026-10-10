@@ -65,6 +65,14 @@ def browse(snapshot: Snapshot, query: dict[str, str]) -> dict[str, object]:
     }
 
 
+def public_state(state: dict[str, object]) -> dict[str, object]:
+    """L'état sans `notify.last_errors` : ces messages peuvent citer l'adresse non masquée."""
+    memory = state.get("notify")
+    if not isinstance(memory, dict):
+        return state
+    return {**state, "notify": {k: v for k, v in memory.items() if k != "last_errors"}}
+
+
 def _describe(entry: FileEntry, name: str) -> dict[str, object]:
     try:
         mtime: str | None = datetime.fromtimestamp(entry.mtime).isoformat(timespec="seconds")
@@ -103,7 +111,7 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
             "disk": disk,
             "notifications": notifications(state),
             "last_verify": state.get("last_verify"),
-            "state": state,
+            "state": public_state(state),
         }
 
     def notifications(state: dict[str, object]) -> dict[str, object]:
@@ -184,6 +192,8 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
     slots = threading.BoundedSemaphore(MAX_CONCURRENT)
 
     class Handler(BaseHTTPRequestHandler):
+        timeout = 10  # un client lent ne garde pas un fil indéfiniment (le plafond ne joue qu'après lecture)
+
         def do_GET(self) -> None:
             if not slots.acquire(blocking=False):
                 self._send(503, {"error": "serveur occupé, réessayez"})
@@ -191,7 +201,7 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
             try:
                 self._get()
             except Exception as error:  # noqa: BLE001 - jamais de fil qui meurt en silence
-                print(f"api : erreur inattendue sur {self.path} : {error!r}", file=sys.stderr)
+                print(f"api : erreur inattendue sur {self.path!r} : {error!r}", file=sys.stderr)
                 try:
                     self._send(500, {"error": "erreur interne"})
                 except OSError:
