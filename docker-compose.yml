@@ -33,6 +33,18 @@ services:
       TZ: ${TZ:-Europe/Paris}
       # API en lecture seule, relayée par le service « web » : aucun port publié.
       HEAVEN_LISTEN: 0.0.0.0:8000
+      # Notifications (voir docs/portainer.md) : vides, elles sont désactivées.
+      HEAVEN_NOTIFY_EMAIL_TO: ${HEAVEN_NOTIFY_EMAIL_TO:-}
+      HEAVEN_NOTIFY_EMAIL_FROM: ${HEAVEN_NOTIFY_EMAIL_FROM:-notifications@famillelallier.net}
+      HEAVEN_SMTP_HOST: ${HEAVEN_SMTP_HOST:-smtp}
+      HEAVEN_SMTP_PORT: ${HEAVEN_SMTP_PORT:-25}
+      HEAVEN_NTFY_URL: ${HEAVEN_NTFY_URL:-http://ntfy}
+      HEAVEN_NTFY_TOKEN: ${HEAVEN_NTFY_TOKEN:-}
+      HEAVEN_NTFY_TOPIC: ${HEAVEN_NTFY_TOPIC:-heaven-alertes}
+      HEAVEN_NOTIFY_REPEAT: ${HEAVEN_NOTIFY_REPEAT:-24h}
+      HEAVEN_NOTIFY_WEEKLY: ${HEAVEN_NOTIFY_WEEKLY:-mon@08:00}
+      HEAVEN_DISK_WARN: ${HEAVEN_DISK_WARN:-20}
+      HEAVEN_DISK_CRIT: ${HEAVEN_DISK_CRIT:-10}
     volumes:
       # Les données à sauvegarder, montées en lecture seule : le conteneur ne
       # peut pas les modifier, même en cas de bogue.
