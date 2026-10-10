@@ -168,6 +168,50 @@ garde-fous protègent les données existantes : un cycle dont **aucune** source
 n'est accessible (volume oublié ou démonté) n'écrit pas d'instantané, et un
 instantané vide ne déclenche jamais la rétention.
 
+### Plusieurs sauvegardes planifiées indépendantes
+
+Par défaut, un service fait **une** sauvegarde. Pour en planifier plusieurs, chacune
+avec ses sources, son horaire et sa rétention, déclarez des *jobs* — dans le
+fichier de configuration :
+
+```toml
+[backup]                      # valeurs communes (dépôt, exclusions…)
+repository = "/repository"
+sources = ["/sources"]
+
+[[jobs]]
+name = "documents"
+schedule = "02:30"
+sources = ["/sources/documents"]
+retention = { keep_last = 7, keep_daily = 7, keep_monthly = 12 }
+
+[[jobs]]
+name = "photos"
+schedule = "7d"
+sources = ["/sources/photos"]
+verify_every = 4
+retention = { keep_last = 3 }
+```
+
+ou par l'environnement, sans fichier :
+
+```
+HEAVEN_JOBS=documents,photos
+HEAVEN_JOB_DOCUMENTS_SCHEDULE=02:30
+HEAVEN_JOB_DOCUMENTS_SOURCES=/sources/documents
+HEAVEN_JOB_PHOTOS_SCHEDULE=7d
+HEAVEN_JOB_PHOTOS_KEEP_LAST=3
+```
+
+Chaque job hérite des réglages communs qu'il ne redéfinit pas. Ils partagent le
+dépôt (donc la déduplication) mais pas leurs instantanés : chacun est étiqueté du
+nom du job, et sa rétention ne touche que les siens. Les jobs s'exécutent l'un
+après l'autre, le plus en retard d'abord. L'état (`/api/health`, `heaven health`)
+détaille chaque job dans `jobs` et résume le pire dans le reste du document : un
+seul job en échec ou en retard suffit à rendre le service « unhealthy ».
+Dans la pile Portainer, les variables `HEAVEN_JOB_*` doivent être ajoutées à
+`environment:` ; le fichier de configuration (`HEAVEN_CONFIG`) évite cela.
+
 ## Structure du dépôt
 
 ```

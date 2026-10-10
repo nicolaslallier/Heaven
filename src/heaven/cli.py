@@ -12,12 +12,16 @@ from pathlib import Path
 from . import __version__, api, engine, notify, scheduler
 from .config import (
     CHUNKING_MODES,
+    DEFAULT_JOB,
     ENV_PREFIX,
     Config,
+    Job,
     RetentionPolicy,
     config_from_env,
     find_config,
+    jobs_from_env,
     load_config,
+    load_jobs,
 )
 from .errors import HeavenError
 from .repository import Repository
@@ -324,27 +328,53 @@ def _cmd_prune(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    config = _resolve_config(args)
-    schedule = scheduler.parse_schedule(args.schedule)
+    jobs, independent = _resolve_jobs(args)
+    default_schedule = scheduler.parse_schedule(args.schedule)
+    scheduled = [
+        scheduler.ScheduledJob(
+            name=job.name,
+            config=job.config,
+            schedule=scheduler.parse_schedule(job.schedule) if job.schedule else default_schedule,
+            # Des jobs indépendants s'étiquettent par leur nom ; seul, l'ancien --tag vaut.
+            tag=job.name if independent else args.tag,
+            verify_every=max(
+                args.verify_every if job.verify_every is None else job.verify_every, 0
+            ),
+        )
+        for job in jobs
+    ]
+    repository = jobs[0].config.repository
     state_path = args.state_file or scheduler.default_state_path()
-    server = api.start(args.listen, config.repository, state_path) if args.listen else None
+    server = api.start(args.listen, repository, state_path) if args.listen else None
     notifier = notify.Notifier(
-        notify.NotifyConfig.from_env(), config.repository, api.HEALTH_GRACE, scheduler.log_line
+        notify.NotifyConfig.from_env(), repository, api.HEALTH_GRACE, scheduler.log_line
     )
     try:
-        return scheduler.serve(
-            config,
-            schedule,
-            tag=args.tag,
+        return scheduler.serve_jobs(
+            scheduled,
             initial_backup=not args.no_initial_backup,
-            verify_every=max(args.verify_every, 0),
             state_path=state_path,
-            max_cycles=1 if args.once else None,
+            max_cycles=len(scheduled) if args.once else None,
             notifier=notifier if notifier.enabled else None,
+            scoped=independent,
         )
     finally:
         if server is not None:
             server.shutdown()
+
+
+def _resolve_jobs(args: argparse.Namespace) -> tuple[list[Job], bool]:
+    """Les jobs à planifier, et s'ils sont déclarés (`[[jobs]]`, `HEAVEN_JOBS`) : indépendants."""
+    if getattr(args, "sources", None):
+        return [Job(DEFAULT_JOB, _resolve_config(args))], False
+    path = _config_path(args)
+    jobs = load_jobs(path) if path is not None else jobs_from_env()
+    if jobs is None:
+        return [Job(DEFAULT_JOB, _load_config(args))], False
+    if getattr(args, "repository", None):
+        for job in jobs:
+            job.config.repository = args.repository.expanduser()
+    return jobs, True
 
 
 def _cmd_notify_test(_args: argparse.Namespace) -> int:

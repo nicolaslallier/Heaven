@@ -19,6 +19,10 @@ CHUNKING_MODES = ("none", "cdc")
 # Préfixe des variables d'environnement reconnues en mode conteneur.
 ENV_PREFIX = "HEAVEN_"
 
+DEFAULT_JOB = "default"
+_JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_BACKUP_KEYS = {"sources", "excludes", "follow_symlinks", "compress", "chunking"}
+
 
 @dataclass(slots=True)
 class RetentionPolicy:
@@ -54,6 +58,20 @@ class Config:
             raise ConfigError("au moins une source est requise")
 
 
+@dataclass(slots=True)
+class Job:
+    """Une sauvegarde planifiée indépendante : ses sources, son horaire, sa rétention.
+
+    Les jobs d'un même service partagent le dépôt (et donc la déduplication) ; leurs
+    instantanés sont distingués par l'étiquette `name`.
+    """
+
+    name: str
+    config: Config
+    schedule: str | None = None  # None : planification par défaut du service
+    verify_every: int | None = None  # None : réglage par défaut du service
+
+
 def find_config(start: Path | None = None) -> Path | None:
     """Cherche un fichier de configuration dans `start` puis ses répertoires parents."""
     current = (start or Path.cwd()).resolve()
@@ -74,6 +92,70 @@ def load_config(path: Path) -> Config:
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise ConfigError(f"configuration invalide ({path}) : {exc}") from exc
     return config_from_dict(raw, base_dir=path.parent)
+
+
+def load_jobs(path: Path) -> list[Job] | None:
+    """Lit les `[[jobs]]` d'un fichier TOML, ou `None` si le fichier n'en déclare pas."""
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ConfigError(f"configuration introuvable : {path}") from exc
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"configuration invalide ({path}) : {exc}") from exc
+    return jobs_from_dict(raw, base_dir=path.parent)
+
+
+def jobs_from_dict(raw: dict[str, Any], base_dir: Path) -> list[Job] | None:
+    jobs_raw = raw.get("jobs")
+    if jobs_raw is None:
+        return None
+    if not (isinstance(jobs_raw, list) and jobs_raw and all(isinstance(j, dict) for j in jobs_raw)):
+        raise ConfigError("jobs doit être une liste de tables ([[jobs]])")
+
+    base = {key: value for key, value in raw.items() if key != "jobs"}
+    shared = base.get("backup", base)
+    if not isinstance(shared, dict):
+        raise ConfigError("la section [backup] doit être une table")
+
+    jobs: list[Job] = []
+    for item in jobs_raw:
+        name = validate_job_name(item.get("name"))
+        if any(job.name == name for job in jobs):
+            raise ConfigError(f"job en double : {name!r}")
+        unknown = set(item) - {
+            "name", "schedule", "verify_every", "sources", "excludes",
+            "follow_symlinks", "compress", "chunking", "retention",
+        }  # fmt: skip
+        if unknown:
+            raise ConfigError(f"job {name!r} : clés inconnues : {', '.join(sorted(unknown))}")
+        merged_backup = {**shared, **{k: v for k, v in item.items() if k in _BACKUP_KEYS}}
+        retention = item.get("retention", base.get("retention", {}))
+        merged = {"backup": merged_backup, "retention": retention}
+        schedule = item.get("schedule")
+        verify_every = item.get("verify_every")
+        if schedule is not None and not isinstance(schedule, str):
+            raise ConfigError(f"job {name!r} : schedule doit être du texte")
+        if verify_every is not None and (
+            not isinstance(verify_every, int) or isinstance(verify_every, bool) or verify_every < 0
+        ):
+            raise ConfigError(f"job {name!r} : verify_every doit être un entier positif ou nul")
+        jobs.append(
+            Job(
+                name=name,
+                config=config_from_dict(merged, base_dir),
+                schedule=schedule,
+                verify_every=verify_every,
+            )
+        )
+    return jobs
+
+
+def validate_job_name(value: object) -> str:
+    if not isinstance(value, str) or not _JOB_NAME.match(value):
+        raise ConfigError(
+            f"nom de job invalide : {value!r} (lettres, chiffres, « - » et « _ » seulement)"
+        )
+    return value
 
 
 def config_from_dict(raw: dict[str, Any], base_dir: Path) -> Config:
@@ -158,6 +240,60 @@ def config_from_env(env: Mapping[str, str] | None = None) -> Config | None:
         chunking=(values.get(f"{ENV_PREFIX}CHUNKING") or "none").strip().lower(),
         retention=retention,
     )
+
+
+def jobs_from_env(env: Mapping[str, str] | None = None) -> list[Job] | None:
+    """Jobs déclarés par `HEAVEN_JOBS=docs,photos`, ou `None` si la variable est absente.
+
+    Chaque job lit `HEAVEN_JOB_<NOM>_SCHEDULE`, `_SOURCES`, `_EXCLUDES`, `_KEEP_*`
+    et `_VERIFY_EVERY` ; ce qu'il ne définit pas vient des variables communes
+    (`HEAVEN_SOURCES`, `HEAVEN_KEEP_*`…).
+    """
+    values = os.environ if env is None else env
+    names = _split_list(values.get(f"{ENV_PREFIX}JOBS"))
+    if not names:
+        return None
+    repository = (values.get(f"{ENV_PREFIX}REPOSITORY") or "").strip()
+    if not repository:
+        raise ConfigError(f"{ENV_PREFIX}REPOSITORY est requis avec {ENV_PREFIX}JOBS")
+
+    jobs: list[Job] = []
+    for name in names:
+        validate_job_name(name)
+        if any(job.name == name for job in jobs):
+            raise ConfigError(f"job en double dans {ENV_PREFIX}JOBS : {name!r}")
+        prefix = f"{ENV_PREFIX}JOB_{re.sub(r'[^A-Z0-9]', '_', name.upper())}_"
+        sources = _split_list(values.get(f"{prefix}SOURCES")) or _split_list(
+            values.get(f"{ENV_PREFIX}SOURCES")
+        )
+        if not sources:
+            raise ConfigError(f"job {name!r} : {prefix}SOURCES (ou {ENV_PREFIX}SOURCES) requis")
+        keys = ("KEEP_LAST", "KEEP_DAILY", "KEEP_WEEKLY", "KEEP_MONTHLY")
+        if any((values.get(prefix + key) or "").strip() for key in keys):
+            retention = RetentionPolicy(*(_int(values, prefix + key, 0) for key in keys))
+        else:
+            retention = RetentionPolicy(*(_int(values, ENV_PREFIX + key, 0) for key in keys))
+        excludes_raw = values.get(f"{prefix}EXCLUDES")
+        verify = (values.get(f"{prefix}VERIFY_EVERY") or "").strip()
+        jobs.append(
+            Job(
+                name=name,
+                config=Config(
+                    sources=[Path(item).expanduser() for item in sources],
+                    repository=Path(repository).expanduser(),
+                    excludes=_split_list(excludes_raw)
+                    if excludes_raw is not None
+                    else _split_list(values.get(f"{ENV_PREFIX}EXCLUDES")),
+                    follow_symlinks=_bool(values, f"{ENV_PREFIX}FOLLOW_SYMLINKS", False),
+                    compress=_bool(values, f"{ENV_PREFIX}COMPRESS", True),
+                    chunking=(values.get(f"{ENV_PREFIX}CHUNKING") or "none").strip().lower(),
+                    retention=retention,
+                ),
+                schedule=(values.get(f"{prefix}SCHEDULE") or "").strip() or None,
+                verify_every=_int(values, prefix + "VERIFY_EVERY", 0) if verify else None,
+            )
+        )
+    return jobs
 
 
 def _split_list(value: str | None) -> list[str]:
