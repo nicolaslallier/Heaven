@@ -16,6 +16,8 @@ services:
       HEAVEN_REPOSITORY: ${HEAVEN_REPOSITORY:-/repository}
       HEAVEN_EXCLUDES: ${HEAVEN_EXCLUDES:-*.tmp,__pycache__,node_modules,.venv}
       HEAVEN_SCHEDULE: ${HEAVEN_SCHEDULE:-02:30}
+      # Sauvegardes indépendantes (README, « Plusieurs sauvegardes planifiées ») : vide = un seul job.
+      HEAVEN_JOBS: ${HEAVEN_JOBS:-}
       HEAVEN_TAG: ${HEAVEN_TAG:-portainer}
       HEAVEN_VERIFY_EVERY: ${HEAVEN_VERIFY_EVERY:-7}
       HEAVEN_KEEP_LAST: ${HEAVEN_KEEP_LAST:-7}

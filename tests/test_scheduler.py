@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from heaven.config import Config
+from heaven.config import Config, RetentionPolicy
 from heaven.errors import ConfigError, HeavenError
 from heaven.repository import Repository
 from heaven.scheduler import health, parse_schedule, run_cycle, serve
@@ -291,3 +292,90 @@ def test_history_is_capped(tmp_path: Path) -> None:
     assert len(memory.history) == HISTORY_LIMIT and memory.history[0]["started_at"] == str(
         HISTORY_LIMIT + 4
     )
+
+
+# -- jobs indépendants -------------------------------------------------------
+
+
+def _two_jobs(tmp_path: Path) -> list:
+    from heaven.scheduler import ScheduledJob
+
+    jobs = []
+    for name, schedule in (("docs", "02:30"), ("photos", "6h")):
+        source = tmp_path / name
+        source.mkdir()
+        (source / f"{name}.txt").write_text(name, encoding="utf-8")
+        jobs.append(
+            ScheduledJob(
+                name=name,
+                config=Config(
+                    sources=[source],
+                    repository=tmp_path / "repo",
+                    retention=RetentionPolicy(keep_last=1),
+                ),
+                schedule=parse_schedule(schedule),
+                tag=name,
+            )
+        )
+    return jobs
+
+
+def test_jobs_run_on_their_own_schedule_and_prune_independently(tmp_path: Path) -> None:
+    from heaven.scheduler import serve_jobs
+
+    jobs = _two_jobs(tmp_path)
+    state = tmp_path / "state.json"
+
+    for _ in range(2):  # deux passes : la rétention (1 par job) retire l'ancien de chacun
+        for job in jobs:
+            job.cycles = 0
+        code = serve_jobs(
+            jobs, state_path=state, max_cycles=2, log=lambda _m: None, stop=threading.Event()
+        )
+        assert code == 0
+
+    snapshots = Repository.open(tmp_path / "repo").list_snapshots()
+    assert sorted(s.tag for s in snapshots) == ["docs", "photos"]  # un chacun, aucun écrasé
+
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert [job["name"] for job in saved["jobs"]] == ["docs", "photos"]
+    assert {job["name"]: job["schedule"] for job in saved["jobs"]} == {
+        "docs": "02:30",
+        "photos": "6h",
+    }
+    # Le résumé du haut reste celui que lisent la sonde de santé et l'API.
+    assert saved["status"] == "ok"
+    assert saved["next_run"] == min(job["next_run"] for job in saved["jobs"])
+    assert {run["job"] for run in saved["history"]} == {"docs", "photos"}
+
+
+def test_one_failing_job_marks_the_service_in_error(tmp_path: Path) -> None:
+    from heaven.scheduler import serve_jobs
+
+    jobs = _two_jobs(tmp_path)
+    jobs[1].config.sources = [tmp_path / "absent"]
+    state = tmp_path / "state.json"
+
+    code = serve_jobs(
+        jobs, state_path=state, max_cycles=2, log=lambda _m: None, stop=threading.Event()
+    )
+
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert code == 1
+    assert saved["status"] == "error"
+    assert saved["last_run"]["job"] == "photos"
+    healthy, reason = health(state, grace=timedelta(hours=1))
+    assert not healthy and "photos" in reason
+
+
+def test_prune_with_a_tag_leaves_other_jobs_alone(config: Config) -> None:
+    from heaven import engine
+
+    engine.backup(config, tag="a")
+    engine.backup(config, tag="b")
+    engine.backup(config, tag="b")
+
+    result = engine.prune(config.repository, RetentionPolicy(keep_last=1), tag="b")
+
+    assert len(result.removed) == 1
+    assert sorted(s.tag for s in Repository.open(config.repository).list_snapshots()) == ["a", "b"]

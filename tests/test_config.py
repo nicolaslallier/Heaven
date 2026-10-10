@@ -139,3 +139,65 @@ def test_config_from_env_is_absent_when_nothing_is_set() -> None:
 def test_config_from_env_rejects_an_incomplete_environment(env: dict[str, str]) -> None:
     with pytest.raises(ConfigError):
         config_from_env(env)
+
+
+def test_jobs_from_toml_inherit_and_override(tmp_path: Path) -> None:
+    from heaven.config import jobs_from_dict
+
+    jobs = jobs_from_dict(
+        {
+            "backup": {"sources": ["/a"], "repository": "/repo", "excludes": ["*.tmp"]},
+            "retention": {"keep_last": 3},
+            "jobs": [
+                {"name": "docs", "schedule": "02:30"},
+                {
+                    "name": "photos",
+                    "schedule": "6h",
+                    "sources": ["/photos"],
+                    "retention": {"keep_monthly": 12},
+                },
+            ],
+        },
+        tmp_path,
+    )
+    assert jobs is not None
+    docs, photos = jobs
+    assert docs.config.sources == [Path("/a")] and docs.config.retention.keep_last == 3
+    assert docs.config.excludes == ["*.tmp"]
+    assert photos.schedule == "6h" and photos.config.sources == [Path("/photos")]
+    assert photos.config.retention.keep_monthly == 12 and photos.config.retention.keep_last != 3
+
+
+def test_jobs_reject_duplicates_and_bad_names(tmp_path: Path) -> None:
+    from heaven.config import jobs_from_dict
+
+    base = {"backup": {"sources": ["/a"], "repository": "/repo"}}
+    with pytest.raises(ConfigError):
+        jobs_from_dict({**base, "jobs": [{"name": "x"}, {"name": "x"}]}, tmp_path)
+    with pytest.raises(ConfigError):
+        jobs_from_dict({**base, "jobs": [{"name": "a b"}]}, tmp_path)
+    assert jobs_from_dict(base, tmp_path) is None
+
+
+def test_jobs_from_env() -> None:
+    from heaven.config import jobs_from_env
+
+    jobs = jobs_from_env(
+        {
+            "HEAVEN_JOBS": "docs,photos",
+            "HEAVEN_REPOSITORY": "/repo",
+            "HEAVEN_SOURCES": "/srv",
+            "HEAVEN_KEEP_LAST": "7",
+            "HEAVEN_JOB_DOCS_SCHEDULE": "02:30",
+            "HEAVEN_JOB_PHOTOS_SCHEDULE": "6h",
+            "HEAVEN_JOB_PHOTOS_SOURCES": "/photos",
+            "HEAVEN_JOB_PHOTOS_KEEP_MONTHLY": "12",
+        }
+    )
+    assert jobs is not None
+    docs, photos = jobs
+    assert docs.schedule == "02:30" and docs.config.sources == [Path("/srv")]
+    assert docs.config.retention.keep_last == 7
+    assert photos.config.sources == [Path("/photos")]
+    assert photos.config.retention.keep_monthly == 12 and photos.config.retention.keep_last != 3
+    assert jobs_from_env({"HEAVEN_REPOSITORY": "/repo"}) is None

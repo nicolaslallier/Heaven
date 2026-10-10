@@ -64,6 +64,7 @@ toutes, puis en la redéployant à chaque image publiée. Section 6.
 | `HEAVEN_REPOSITORY` | `/repository` | dépôt vu du conteneur |
 | `HEAVEN_EXCLUDES` | `*.tmp,__pycache__,node_modules,.venv` | motifs exclus |
 | `HEAVEN_SCHEDULE` | `02:30` | `02:30`, `02:30,14:00` ou un intervalle `6h` / `90m` |
+| `HEAVEN_JOBS` | *(vide)* | noms de jobs indépendants (`documents,photos`) ; chacun lit `HEAVEN_JOB_<NOM>_SCHEDULE` / `_SOURCES` / `_KEEP_*` — voir le README |
 | `HEAVEN_TAG` | `portainer` | étiquette portée par les instantanés |
 | `HEAVEN_VERIFY_EVERY` | `7` | vérification d'intégrité tous les N cycles (`0` : jamais) |
 | `HEAVEN_KEEP_LAST` / `_DAILY` / `_WEEKLY` / `_MONTHLY` | `7` / `7` / `4` / `6` | rétention. Une variable absente vaut `0` (par défaut, avec un `heaven.toml`, `keep_last` vaudrait 7) ; sans aucune `HEAVEN_KEEP_*`, tout est conservé |

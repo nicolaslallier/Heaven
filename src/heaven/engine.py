@@ -97,7 +97,7 @@ def backup(
         tag=tag,
     )
     result = BackupResult(snapshot=snapshot)
-    previous = None if full else _previous_snapshot(repository)
+    previous = None if full else _previous_snapshot(repository, tag)
     previous_entries = {item.path: item for item in previous.entries} if previous else {}
 
     for entry in scan(
@@ -137,8 +137,12 @@ def backup(
     return result
 
 
-def _previous_snapshot(repository: Repository) -> Snapshot | None:
+def _previous_snapshot(repository: Repository, tag: str | None = None) -> Snapshot | None:
+    """Dernier instantané, du même job si `tag` est donné (les autres ont d'autres sources)."""
     ids = repository.list_snapshot_ids()
+    if tag is not None:
+        scoped = [snapshot.id for snapshot in repository.list_snapshots() if snapshot.tag == tag]
+        ids = scoped
     if not ids:
         return None
     try:
@@ -392,11 +396,18 @@ def prune(
     repository_path: Path,
     policy: RetentionPolicy,
     dry_run: bool = False,
+    tag: str | None = None,
 ) -> PruneResult:
-    """Applique la politique de rétention, puis supprime les objets devenus orphelins."""
+    """Applique la politique de rétention, puis supprime les objets devenus orphelins.
+
+    Avec `tag`, seuls les instantanés de ce job sont candidats : les autres sont
+    conservés tels quels, chaque job ayant sa propre rétention.
+    """
     repository = Repository.open(repository_path)
-    snapshots = repository.list_snapshots()
-    keep = select_snapshots_to_keep(snapshots, policy)
+    everything = repository.list_snapshots()
+    snapshots = [s for s in everything if tag is None or s.tag == tag]
+    others = [s for s in everything if tag is not None and s.tag != tag]
+    keep = [*select_snapshots_to_keep(snapshots, policy), *others]
     keep_ids = {snapshot.id for snapshot in keep}
     result = PruneResult(
         kept=sorted(keep_ids),
