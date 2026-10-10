@@ -258,40 +258,6 @@ Le tableau de bord n'est plus ouvert à tout le réseau.
 L'authentification est implémentée dans l'API Python (pas seulement dans
 nginx), pour rester vraie quelle que soit la façon d'exposer la pile.
 
-## 7. Critères d'acceptation
-
-1. Avec un état `ok`, la page affiche l'indicateur vert, la date de la
-   dernière sauvegarde et la prochaine échéance.
-2. Après un cycle en échec, l'indicateur passe au rouge et affiche l'erreur
-   du cycle, sans recharger la page (≤ 30 s).
-3. Une sauvegarde en retard de plus d'une heure passe l'indicateur au rouge
-   (même règle que la sonde Docker).
-4. Un cycle avec fichiers ignorés passe l'indicateur à l'orange et liste les
-   avertissements.
-5. L'historique conserve au moins 30 cycles après redémarrage du conteneur
-   (le fichier d'état est sur un volume).
-6. Un `state.json` au `format: 1` est lu sans erreur.
-7. Les routes restent en lecture seule : tout `POST`/`PUT`/`DELETE` est
-   refusé (405).
-8. Aucune requête n'est bloquée par le calcul de taille du dépôt (valeur
-   en cache).
-9. La page est lisible à 360 px de large.
-10. Tests : `tests/test_api.py` couvre `/api/runs`, `/api/repository` et le
-    champ `status` ; `tests/test_scheduler.py` couvre la migration du format
-    d'état et la borne de l'historique.
-11. Sans connexion, l'interface et l'API répondent 401 (sauf la page de
-    connexion) ; un mauvais mot de passe 6 fois de suite est bloqué.
-12. Un cycle en échec envoie **un** courriel (et un SMS) ; un second cycle en
-    échec ne renvoie rien avant 24 h ; le retour à l'état OK envoie un message
-    de rétablissement.
-13. Une panne d'envoi (SMTP injoignable) n'interrompt pas le service.
-14. Sous `HEAVEN_DISK_WARN` l'état passe à l'orange, sous `HEAVEN_DISK_CRIT`
-    au rouge.
-15. On peut parcourir un instantané de 500 000 fichiers sans charger toute la
-    liste dans le navigateur.
-16. Avec deux instances configurées, l'onglet « Toutes » affiche l'état des
-    deux ; une instance injoignable apparaît en gris sans masquer l'autre.
-
 ## 7. Notifications
 
 Le service planifié envoie un message quand l'état se dégrade, pas à chaque
@@ -329,7 +295,41 @@ Règles :
 - Le tableau de bord affiche les canaux actifs et la date du dernier envoi
   (sans afficher adresses ni numéros en entier : `n***@famille…`).
 
-## 8. Plan de livraison
+## 8. Critères d'acceptation
+
+1. Avec un état `ok`, la page affiche l'indicateur vert, la date de la
+   dernière sauvegarde et la prochaine échéance.
+2. Après un cycle en échec, l'indicateur passe au rouge et affiche l'erreur
+   du cycle, sans recharger la page (≤ 30 s).
+3. Une sauvegarde en retard de plus d'une heure passe l'indicateur au rouge
+   (même règle que la sonde Docker).
+4. Un cycle avec fichiers ignorés passe l'indicateur à l'orange et liste les
+   avertissements.
+5. L'historique conserve au moins 30 cycles après redémarrage du conteneur
+   (le fichier d'état est sur un volume).
+6. Un `state.json` au `format: 1` est lu sans erreur.
+7. Les routes restent en lecture seule : tout `POST`/`PUT`/`DELETE` est
+   refusé (405).
+8. Aucune requête n'est bloquée par le calcul de taille du dépôt (valeur
+   en cache).
+9. La page est lisible à 360 px de large.
+10. Tests : `tests/test_api.py` couvre `/api/runs`, `/api/repository` et le
+    champ `status` ; `tests/test_scheduler.py` couvre la migration du format
+    d'état et la borne de l'historique.
+11. Sans connexion, l'interface et l'API répondent 401 (sauf la page de
+    connexion) ; un mauvais mot de passe 6 fois de suite est bloqué.
+12. Un cycle en échec envoie **un** courriel (et un SMS) ; un second cycle en
+    échec ne renvoie rien avant 24 h ; le retour à l'état OK envoie un message
+    de rétablissement.
+13. Une panne d'envoi (SMTP injoignable) n'interrompt pas le service.
+14. Sous `HEAVEN_DISK_WARN` l'état passe à l'orange, sous `HEAVEN_DISK_CRIT`
+    au rouge.
+15. On peut parcourir un instantané de 500 000 fichiers sans charger toute la
+    liste dans le navigateur.
+16. Avec deux instances configurées, l'onglet « Toutes » affiche l'état des
+    deux ; une instance injoignable apparaît en gris sans masquer l'autre.
+
+## 9. Plan de livraison
 
 | Étape | Contenu | Dépend de |
 | --- | --- | --- |
@@ -346,7 +346,7 @@ Règles :
 
 Chaque étape est livrable seule et ne casse pas la sonde de santé Docker.
 
-## 9. Décisions
+## 10. Décisions
 
 | # | Question | Décision |
 | --- | --- | --- |
@@ -357,7 +357,7 @@ Chaque étape est livrable seule et ne casse pas la sonde de santé Docker.
 | 5 | Historique de 200 cycles | Oui (§5.2) |
 | 6 | Authentification | Oui : mot de passe + jeton d'API (§6.1) |
 
-## 10. Questions ouvertes
+## 11. Questions ouvertes
 
 1. **Fournisseur SMS** : lequel utiliser (Twilio, Free Mobile, passerelle
    courriel→SMS de l'opérateur, autre) ? La spec le laisse configurable, mais
