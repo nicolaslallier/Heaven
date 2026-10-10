@@ -33,7 +33,7 @@ Un seul profil : l'administrateur du serveur (usage familial / homelab).
 | U7 | « Pourquoi ça a échoué ? » | Message d'erreur et avertissements du cycle |
 | U8 | « Quels instantanés puis-je restaurer ? » | Liste des instantanés (id, date, tag, fichiers, taille) |
 | U9 | « Qu'y a-t-il dans cet instantané ? » | Arborescence des fichiers, navigable |
-| U10 | « Suis-je prévenu si ça casse ? » | Courriel et SMS en cas d'échec, de retard ou de manque d'espace |
+| U10 | « Suis-je prévenu si ça casse ? » | Courriel et push téléphone en cas d'échec, de retard ou de manque d'espace |
 | U11 | « Et mes autres machines / dépôts ? » | Une vue agrégée de plusieurs instances Heaven |
 | U12 | « Qui peut voir ça ? » | Accès protégé par un mot de passe |
 
@@ -129,7 +129,8 @@ tableau de bord peut agréger plusieurs instances : un onglet « Toutes » liste
 une ligne par instance (nom, indicateur, dernière sauvegarde, espace libre),
 un clic ouvre le tableau de bord complet de l'instance.
 
-Configuration côté service web : variable `HEAVEN_INSTANCES`, liste
+Cible : **toutes** les machines à sauvegarder, chacune avec sa propre instance
+`heaven serve`. Configuration côté service web : variable `HEAVEN_INSTANCES`, liste
 `nom=url` (ex. `maison=http://heaven:8000,nas=https://nas.lan/heaven`). Par
 défaut, une seule instance : celle de la pile (comportement actuel). Chaque
 instance garde son propre jeton (§6.1). Le relais se fait côté nginx, jamais
@@ -239,61 +240,107 @@ milliers de fichiers. `?q=` filtre par nom.
 - Thème clair / sombre selon `prefers-color-scheme`.
 - Accessibilité : contraste AA, statut annoncé en texte, navigation clavier.
 
-### 6.1 Authentification
+### 6.1 Authentification et comptes
 
-Le tableau de bord n'est plus ouvert à tout le réseau.
+Comptes distincts, un par personne : l'identité est déléguée à **Keycloak**
+(realm `infra`), déjà utilisé par l'Infra pour pgAdmin, S3, Prefect, etc.
+Heaven ne stocke aucun mot de passe.
 
-- Un mot de passe unique (`HEAVEN_UI_PASSWORD`, stocké haché au démarrage)
-  protège l'interface : page de connexion, cookie de session `HttpOnly`,
-  `SameSite=Strict`, `Secure` derrière HTTPS, expiration au bout de 7 jours.
-- L'API accepte aussi un jeton `Authorization: Bearer` (`HEAVEN_API_TOKEN`),
-  utilisé par le relais multi-instances (§3.8) et les outils externes.
+- **Connexion** : le nginx d'Infra place `heaven.infra.famillelallier.net`
+  derrière un `oauth2-proxy` dédié (client Keycloak `heaven`, même recette que
+  `oauth2-proxy-prefect`). Une personne sans compte, ou hors du groupe Keycloak
+  `heaven`, n'atteint jamais la page.
+- **Identité côté Heaven** : le proxy transmet `X-Auth-Request-User` et
+  `X-Auth-Request-Email`. `heaven-web` affiche le nom connecté et le journalise
+  pour chaque accès. Heaven n'implémente ni formulaire de connexion ni
+  jeton JWT : le projet reste **sans dépendance externe**.
+- **Confiance dans les en-têtes** : tout conteneur de `infra-net` peut
+  atteindre `heaven-web`. Le nginx d'Infra ajoute donc un en-tête secret
+  (`X-Heaven-Proxy`, valeur `HEAVEN_PROXY_SECRET`) que `heaven-web` exige,
+  sinon 403. Sans lui, un en-tête d'identité serait falsifiable.
+- **Rôles** : deux groupes Keycloak, `heaven` (lecture) et `heaven-admin`
+  (réservé : futures actions d'écriture ; inutilisé en v1, tout est en lecture
+  seule).
+- **Jeton de service** : `HEAVEN_API_TOKEN` (`Authorization: Bearer`), pour le
+  relais multi-instances (§3.8), hors navigateur. Comparaison à temps constant.
 - La sonde de santé Docker (`heaven health`) lit le fichier d'état et ne passe
-  pas par HTTP : elle n'est pas affectée.
-- Limitation des essais de connexion (5 échecs / 5 min par adresse).
-- Comparaisons de secrets à temps constant (`hmac.compare_digest`).
-- Mots de passe et jetons ne vont **que** dans les variables d'environnement
-  de la pile ou un secret Docker, jamais dans le dépôt.
+  pas par HTTP.
+- Secrets (`HEAVEN_PROXY_SECRET`, `HEAVEN_API_TOKEN`) : variables de la pile
+  ou OpenBao (`infra/apps/heaven`), jamais dans le dépôt.
 
-L'authentification est implémentée dans l'API Python (pas seulement dans
-nginx), pour rester vraie quelle que soit la façon d'exposer la pile.
+Dépendance : la création du client Keycloak, de l'`oauth2-proxy` et du vhost
+se fait dans le dépôt **Infra**, pas ici (§9, étape 3).
 
 ## 7. Notifications
 
 Le service planifié envoie un message quand l'état se dégrade, pas à chaque
-cycle.
+cycle. Il s'appuie sur les deux services de notification **déjà fournis par
+l'Infra** sur `infra-net` : aucun code SMTP ni push à héberger.
 
-| Événement | Quand |
-| --- | --- |
-| Échec de sauvegarde | Un cycle finit en `error` |
-| Retard | Sauvegarde non démarrée au-delà du délai de grâce |
-| Dépôt corrompu | La vérification trouve des objets manquants ou corrompus |
-| Espace disque | Passage sous `HEAVEN_DISK_WARN` / `HEAVEN_DISK_CRIT` |
-| Rétablissement | Retour à l'état OK après un problème |
-| Résumé hebdomadaire *(facultatif)* | Un courriel par semaine, même si tout va bien : prouve que la surveillance elle-même fonctionne |
+| Canal | Service Infra | Pour quoi |
+| --- | --- | --- |
+| Courriel | relais Postfix `smtp:25` (sans authentification, sans TLS interne, `From` forcé sur `famillelallier.net`) | tous les messages |
+| Téléphone | serveur ntfy `http://ntfy` (jeton par application, sujet par catégorie) | états rouges et rétablissement |
 
-Règles :
+> **À noter : pas de SMS.** L'Infra n'offre pas de passerelle SMS, mais un push
+> ntfy (application Android / iOS, notification instantanée sur le téléphone).
+> La spec utilise donc ntfy à la place du SMS demandé. Si un vrai SMS est
+> indispensable, il faudrait ajouter un fournisseur côté Infra (§11).
+
+### 7.1 Événements
+
+| Événement | Quand | Courriel | Push |
+| --- | --- | --- | --- |
+| Échec de sauvegarde | Un cycle finit en `error` | oui | oui, priorité haute |
+| Retard | Sauvegarde non démarrée au-delà du délai de grâce | oui | oui, priorité haute |
+| Dépôt corrompu | La vérification trouve des objets manquants ou corrompus | oui | oui, priorité urgente |
+| Espace disque critique | Sous `HEAVEN_DISK_CRIT` | oui | oui, priorité haute |
+| Espace disque bas | Sous `HEAVEN_DISK_WARN` | oui | non |
+| Avertissements | Cycle `ok` avec fichiers ignorés | oui (résumé) | non |
+| Rétablissement | Retour à l'état OK après un problème | oui | oui, priorité basse |
+| Résumé hebdomadaire | Chaque lundi matin, **activé par défaut** | oui | non |
+
+Le résumé hebdomadaire prouve que la surveillance elle-même fonctionne : son
+absence un lundi est un signal. Contenu : cycles de la semaine (réussis /
+échoués), instantanés créés, taille du dépôt et variation, espace libre,
+dernière vérification.
+
+### 7.2 Règles
 
 - **Anti-bruit** : un message par *changement d'état* (OK → problème, problème
   → OK), puis un rappel toutes les 24 h tant que le problème dure
-  (`HEAVEN_NOTIFY_REPEAT`). Un problème qui dure ne spamme pas.
-- **Courriel** : SMTP (`HEAVEN_SMTP_HOST`, `_PORT`, `_USER`, `_PASSWORD`,
-  `HEAVEN_NOTIFY_EMAIL_FROM`, `HEAVEN_NOTIFY_EMAIL_TO`), STARTTLS obligatoire
-  hors LAN. Module `smtplib` de la bibliothèque standard : le projet reste
-  **sans dépendance externe**.
-- **SMS** : par une passerelle HTTP configurable (`HEAVEN_NOTIFY_SMS_URL`,
-  corps et en-têtes modèles avec `{message}` et `{to}`), pour ne pas
-  dépendre d'un fournisseur. Message court (≤ 160 caractères) : état, machine,
-  raison abrégée, lien vers le tableau de bord. Réservé aux états **rouges** ;
-  l'orange part en courriel seulement.
-- Un échec d'envoi ne doit jamais arrêter le service : il est journalisé et
-  réessayé au cycle suivant.
-- L'état des notifications envoyées (dernier état notifié, date) vit dans
-  `state.json` pour survivre aux redémarrages.
-- `heaven notify-test` envoie un message d'essai sur tous les canaux
-  configurés.
-- Le tableau de bord affiche les canaux actifs et la date du dernier envoi
-  (sans afficher adresses ni numéros en entier : `n***@famille…`).
+  (`HEAVEN_NOTIFY_REPEAT`).
+- **Un seul destinataire** : `HEAVEN_NOTIFY_EMAIL_TO` (une adresse).
+- **Courriel** : module `smtplib` de la bibliothèque standard, `smtp:25`, sans
+  TLS ni authentification (réseau `infra-net`). Le projet reste **sans
+  dépendance externe**.
+- **Push** : `POST` HTTP vers `NTFY_URL/NTFY_TOPIC` avec `Authorization: Bearer
+  $NTFY_TOKEN`, via `urllib` (bibliothèque standard). Le jeton s'obtient côté
+  Infra par `make ntfy-provision app=heaven` : écriture seule, limitée aux
+  sujets `heaven-*`. Sujet par défaut : `heaven-alertes`.
+- **Réseau** : le service `heaven` (aujourd'hui sur le réseau par défaut de la
+  pile seulement) doit **rejoindre `infra-net`** pour joindre `smtp` et `ntfy`.
+  Son API reste sans port publié.
+- Un échec d'envoi ne doit jamais arrêter le service ni bloquer un cycle : il
+  est journalisé et réessayé au cycle suivant (contrat « au mieux » de l'Infra).
+- L'état des notifications (dernier état notifié, date, derniers échecs
+  d'envoi) vit dans `state.json` pour survivre aux redémarrages.
+- `heaven notify-test` envoie un message d'essai sur chaque canal configuré.
+- Le tableau de bord affiche les canaux actifs, la date du dernier envoi et son
+  résultat (l'adresse est abrégée : `n***@famillelallier.net`).
+
+### 7.3 Variables
+
+| Variable | Défaut | Rôle |
+| --- | --- | --- |
+| `HEAVEN_SMTP_HOST` / `HEAVEN_SMTP_PORT` | `smtp` / `25` | relais de l'Infra |
+| `HEAVEN_NOTIFY_EMAIL_FROM` | `notifications@famillelallier.net` | expéditeur |
+| `HEAVEN_NOTIFY_EMAIL_TO` | *(vide : courriel désactivé)* | destinataire |
+| `HEAVEN_NTFY_URL` | `http://ntfy` | push |
+| `HEAVEN_NTFY_TOKEN` | *(vide : push désactivé)* | jeton par application |
+| `HEAVEN_NTFY_TOPIC` | `heaven-alertes` | sujet |
+| `HEAVEN_NOTIFY_REPEAT` | `24h` | rappel d'un problème qui dure |
+| `HEAVEN_NOTIFY_WEEKLY` | `mon@08:00` | résumé hebdomadaire ; vide pour le couper |
 
 ## 8. Critères d'acceptation
 
@@ -316,12 +363,15 @@ Règles :
 10. Tests : `tests/test_api.py` couvre `/api/runs`, `/api/repository` et le
     champ `status` ; `tests/test_scheduler.py` couvre la migration du format
     d'état et la borne de l'historique.
-11. Sans connexion, l'interface et l'API répondent 401 (sauf la page de
-    connexion) ; un mauvais mot de passe 6 fois de suite est bloqué.
-12. Un cycle en échec envoie **un** courriel (et un SMS) ; un second cycle en
+11. Sans connexion Keycloak, ou sans le groupe `heaven`, l'interface est
+    inaccessible ; une requête vers `heaven-web` sans l'en-tête `X-Heaven-Proxy`
+    reçoit 403, même avec un en-tête d'identité ; l'API sans jeton de service
+    valide reçoit 401.
+12. Un cycle en échec envoie **un** courriel et **un** push ; un second cycle en
     échec ne renvoie rien avant 24 h ; le retour à l'état OK envoie un message
-    de rétablissement.
-13. Une panne d'envoi (SMTP injoignable) n'interrompt pas le service.
+    de rétablissement. Le résumé hebdomadaire part le lundi même si tout va bien.
+13. Une panne d'envoi (SMTP ou ntfy injoignable) n'interrompt ni le service ni
+    le cycle en cours.
 14. Sous `HEAVEN_DISK_WARN` l'état passe à l'orange, sous `HEAVEN_DISK_CRIT`
     au rouge.
 15. On peut parcourir un instantané de 500 000 fichiers sans charger toute la
@@ -335,11 +385,11 @@ Règles :
 | --- | --- | --- |
 | 1 | `state.json` v2 : historique borné + résultat de vérification | — |
 | 2 | `/api/runs`, `/api/repository`, `status` dans `/api/health` | 1 |
-| 3 | Authentification (mot de passe, jeton, limitation d'essais) | — |
+| 3 | Authentification : client Keycloak, `oauth2-proxy` et vhost (**dépôt Infra**) ; contrôle de l'en-tête secret et du jeton de service dans `heaven-web` / l'API | — |
 | 4 | Interface : bandeau d'état + cartes + liste des instantanés | 2, 3 |
 | 5 | Interface : historique des cycles + courbe de taille + espace disque | 2, 4 |
-| 6 | Notifications courriel (+ `heaven notify-test`) | 2 |
-| 7 | Notifications SMS (passerelle) | 6 |
+| 6 | Notifications courriel via `smtp:25` (+ `heaven notify-test`, `heaven` sur `infra-net`) | 2 |
+| 7 | Notifications push via ntfy (jeton `make ntfy-provision`) et résumé hebdomadaire | 6 |
 | 8 | Détail d'un instantané : route d'API + arborescence | 3, 4 |
 | 9 | Vue multi-instances | 3, 4 |
 | 10 | Documentation (`README.md`, `docs/portainer.md`, `.env.example`) | toutes |
@@ -350,24 +400,29 @@ Chaque étape est livrable seule et ne casse pas la sonde de santé Docker.
 
 | # | Question | Décision |
 | --- | --- | --- |
-| 1 | Notifications | Oui : courriel et SMS (§7) |
-| 2 | Plusieurs dépôts / machines | Oui : vue agrégée (§3.8) |
+| 1 | Notifications | Courriel + push téléphone, via les services de l'Infra (§7) |
+| 2 | Plusieurs dépôts / machines | Oui : vue agrégée de **toutes** les machines (§3.8) |
 | 3 | Seuil d'espace disque | Oui : `HEAVEN_DISK_WARN` / `HEAVEN_DISK_CRIT` (§3.7) |
 | 4 | Détail d'un instantané | Oui : arborescence dans l'interface (§3.6) |
 | 5 | Historique de 200 cycles | Oui (§5.2) |
-| 6 | Authentification | Oui : mot de passe + jeton d'API (§6.1) |
+| 6 | Authentification | Comptes distincts, via Keycloak (§6.1) |
+| 7 | Fournisseur SMS | « Passerelle de l'Infra » : ntfy (push), faute de SMS (§7) |
+| 8 | Serveur SMTP | Relais `smtp:25` de l'Infra |
+| 9 | Destinataires | Une seule personne |
+| 10 | Résumé hebdomadaire | Oui, activé par défaut |
 
 ## 11. Questions ouvertes
 
-1. **Fournisseur SMS** : lequel utiliser (Twilio, Free Mobile, passerelle
-   courriel→SMS de l'opérateur, autre) ? La spec le laisse configurable, mais
-   les modèles de requête par défaut dépendent du choix.
-2. **Serveur SMTP** : compte existant (domaine `famillelallier.net`, Gmail,
-   autre) ? Détermine le port et le mode TLS par défaut.
-3. **Destinataires** : une seule adresse / un seul numéro, ou plusieurs
-   (famille) ?
-4. **Résumé hebdomadaire** : l'activer par défaut ?
-5. **Multi-instances** : combien de machines à court terme, et chacune
-   exécute-t-elle déjà Heaven en mode `serve` ?
-6. **Authentification** : un mot de passe partagé suffit-il, ou faut-il des
-   comptes distincts ?
+1. **SMS ou push ?** L'Infra n'a pas de passerelle SMS, seulement ntfy (push).
+   Le push suffit-il, ou faut-il un vrai SMS (nouveau fournisseur à ajouter à
+   l'Infra) ?
+2. **Qui reçoit les alertes ?** Adresse du destinataire, et personne à
+   abonner au sujet ntfy `heaven-alertes` sur son téléphone.
+3. **Comptes Keycloak** : quelles personnes dans le groupe `heaven`, et dans
+   quel realm (`infra` supposé) ?
+4. **Livraison du push sur iPhone** : sans `upstream-base-url` côté Infra, iOS
+   reçoit les notifications en retard (Android F-Droid : instantané). Quel
+   téléphone est concerné ?
+5. **Machines** : combien, lesquelles, et chacune peut-elle joindre le
+   `heaven.infra…` de l'Infra (ou faut-il un VPN) ?
+6. **Jour et heure du résumé** : lundi 08:00 convient-il ?
