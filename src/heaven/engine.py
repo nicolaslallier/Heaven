@@ -351,8 +351,8 @@ def _verify_file(
             return False
         except OSError:
             # Erreur d'E/S ou de droits : peut-être passagère, donc corrompu pour le rapport
-            # mais jamais supprimé par `repair`.
-            verified.add(digest)
+            # mais jamais supprimé par `repair`. Pas dans `verified` : chaque instantané qui le
+            # référence doit le signaler.
             return False
         if digest not in verified:
             verified.add(digest)
