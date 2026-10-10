@@ -157,7 +157,7 @@ class Repository:
                 continue
             for object_path in sorted(prefix_dir.iterdir()):
                 digest = prefix_dir.name + object_path.name.removesuffix(".gz")
-                if _DIGEST.fullmatch(digest):  # ignore les temporaires `.tmp-*` d'une écriture interrompue
+                if _DIGEST.fullmatch(digest):  # ignore les temporaires `.tmp-*` (écriture coupée)
                     yield digest
 
     def remove_object(self, digest: str) -> int:
@@ -263,7 +263,7 @@ def _copy_hashed(reader: BinaryIO, raw: BinaryIO, compress: bool) -> str:
 
 
 def _fsync_directory(directory: Path) -> None:
-    """Rend durable l'entrée de répertoire créée par le renommage (best-effort, selon la plateforme)."""
+    """Rend durable l'entrée de répertoire créée par le renommage (best-effort)."""
     try:
         descriptor = os.open(directory, os.O_RDONLY)
     except OSError:

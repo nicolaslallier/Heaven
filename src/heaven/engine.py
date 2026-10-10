@@ -345,7 +345,7 @@ def _verify_file(
                     block.update(chunk)
                     total.update(chunk)
         except (EOFError, zlib.error, gzip.BadGzipFile):
-            # Flux gzip tronqué (EOFError) ou invalide : l'objet est corrompu, `repair` peut le retirer.
+            # Flux gzip tronqué (EOFError) ou invalide : objet corrompu, `repair` peut le retirer.
             result.corrupt_objects.add(digest)
             verified.add(digest)
             return False

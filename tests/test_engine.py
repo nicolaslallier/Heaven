@@ -350,7 +350,8 @@ def test_retention_buckets_use_local_time(monkeypatch: pytest.MonkeyPatch) -> No
             Snapshot(id="a", created_at="2026-03-15T23:30:00+00:00"),
             Snapshot(id="b", created_at="2026-03-16T00:30:00+00:00"),
         ]
-        kept = engine.select_snapshots_to_keep(snapshots, RetentionPolicy(keep_last=0, keep_daily=2))
+        policy = RetentionPolicy(keep_last=0, keep_daily=2)
+        kept = engine.select_snapshots_to_keep(snapshots, policy)
     finally:
         monkeypatch.undo()
         time.tzset()

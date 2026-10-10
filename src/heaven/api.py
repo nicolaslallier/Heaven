@@ -7,6 +7,7 @@ le port n'est joignable que depuis le réseau de la pile.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import threading
@@ -192,7 +193,8 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
     slots = threading.BoundedSemaphore(MAX_CONCURRENT)
 
     class Handler(BaseHTTPRequestHandler):
-        timeout = 10  # un client lent ne garde pas un fil indéfiniment (le plafond ne joue qu'après lecture)
+        # Un client lent ne garde pas un fil indéfiniment (le plafond ne joue qu'après lecture).
+        timeout = 10
 
         def do_GET(self) -> None:
             if not slots.acquire(blocking=False):
@@ -202,10 +204,8 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
                 self._get()
             except Exception as error:  # noqa: BLE001 - jamais de fil qui meurt en silence
                 print(f"api : erreur inattendue sur {self.path!r} : {error!r}", file=sys.stderr)
-                try:
+                with contextlib.suppress(OSError):  # client parti
                     self._send(500, {"error": "erreur interne"})
-                except OSError:
-                    pass  # client parti
             finally:
                 slots.release()
 
