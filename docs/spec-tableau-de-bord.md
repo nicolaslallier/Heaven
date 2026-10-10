@@ -435,11 +435,9 @@ Chaque étape est livrable seule et ne casse pas la sonde de santé Docker.
 | 9 | Destinataire des alertes | Une seule personne : `nicolas.lallier@famillelallier.net`, saisi dans `HEAVEN_NOTIFY_EMAIL_TO` (variable de la pile, vide = courriel désactivé) |
 | 10 | Résumé hebdomadaire | Oui, activé par défaut, lundi 08:00 |
 | 11 | Téléphone abonné au push | iPhone de Nicolas Lallier (voir §7.4) |
+| 12 | Relais `ntfy.sh` pour l'iPhone | Accepté : `upstream-base-url` à activer dans l'Infra (§7.4), prérequis de l'étape 7 |
 
 ## 11. Questions ouvertes
 
-1. **Relais ntfy.sh pour l'iPhone** (§7.4) : accepter d'activer
-   `upstream-base-url: https://ntfy.sh` dans la config ntfy de l'Infra ?
-   Sans cela, les alertes arrivent en retard sur iPhone.
-2. **Multi-instances** : à reprendre le jour où une deuxième machine
+1. **Multi-instances** : à reprendre le jour où une deuxième machine
    sauvegardée apparaît.
