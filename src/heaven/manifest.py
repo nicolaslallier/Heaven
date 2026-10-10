@@ -10,7 +10,8 @@ from typing import Any
 from .errors import RepositoryError
 from .scanner import FileEntry
 
-SNAPSHOT_FORMAT = 1
+SNAPSHOT_FORMAT = 2  # 2 : un fichier peut être décrit par une liste de blocs
+READABLE_FORMATS = (1, 2)
 
 
 @dataclass(slots=True)
@@ -20,7 +21,9 @@ class Snapshot:
     id: str
     created_at: str
     entries: list[FileEntry] = field(default_factory=list)
-    hashes: dict[str, str] = field(default_factory=dict)  # chemin -> empreinte
+    hashes: dict[str, str] = field(default_factory=dict)  # chemin -> empreinte du fichier entier
+    # chemin -> empreintes des blocs, pour les fichiers découpés (sinon l'objet est `hashes`)
+    blocks: dict[str, list[str]] = field(default_factory=dict)
     sources: list[str] = field(default_factory=list)
     excludes: list[str] = field(default_factory=list)
     hostname: str = field(default_factory=socket.gethostname)
@@ -39,9 +42,24 @@ class Snapshot:
     def file_count(self) -> int:
         return sum(1 for entry in self.entries if entry.is_file)
 
+    def object_digests(self, path: str) -> list[str]:
+        """Empreintes des objets à lire, dans l'ordre, pour reconstituer le fichier."""
+        if path in self.blocks:
+            return self.blocks[path]
+        digest = self.hashes.get(path)
+        return [] if digest is None else [digest]
+
+    def referenced_digests(self) -> set[str]:
+        """Empreintes de tous les objets nécessaires à cet instantané."""
+        referenced = {digest for path, digest in self.hashes.items() if path not in self.blocks}
+        for digests in self.blocks.values():
+            referenced.update(digests)
+        return referenced
+
     def to_dict(self) -> dict[str, Any]:
         return {
-            "format": SNAPSHOT_FORMAT,
+            # Sans bloc, le fichier reste lisible par les versions antérieures.
+            "format": SNAPSHOT_FORMAT if self.blocks else 1,
             "id": self.id,
             "created_at": self.created_at,
             "hostname": self.hostname,
@@ -57,6 +75,7 @@ class Snapshot:
                     "mode": entry.mode,
                     "target": entry.target,
                     "hash": self.hashes.get(entry.path),
+                    **({"blocks": self.blocks[entry.path]} if entry.path in self.blocks else {}),
                 }
                 for entry in self.entries
             ],
@@ -65,12 +84,13 @@ class Snapshot:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Snapshot:
         version = raw.get("format")
-        if version != SNAPSHOT_FORMAT:
+        if version not in READABLE_FORMATS:
             raise RepositoryError(
                 f"format d'instantané non pris en charge : {version!r} (attendu {SNAPSHOT_FORMAT})"
             )
         entries: list[FileEntry] = []
         hashes: dict[str, str] = {}
+        blocks: dict[str, list[str]] = {}
         for item in raw.get("entries", []):
             entry = FileEntry(
                 path=item["path"],
@@ -83,11 +103,14 @@ class Snapshot:
             entries.append(entry)
             if item.get("hash"):
                 hashes[entry.path] = item["hash"]
+            if item.get("blocks"):
+                blocks[entry.path] = list(item["blocks"])
         return cls(
             id=raw["id"],
             created_at=raw["created_at"],
             entries=entries,
             hashes=hashes,
+            blocks=blocks,
             sources=raw.get("sources", []),
             excludes=raw.get("excludes", []),
             hostname=raw.get("hostname", ""),

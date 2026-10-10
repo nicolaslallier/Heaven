@@ -20,6 +20,7 @@ services:
       HEAVEN_REPOSITORY: ${HEAVEN_REPOSITORY:-/repository}
       HEAVEN_EXCLUDES: ${HEAVEN_EXCLUDES:-*.tmp,__pycache__,node_modules,.venv}
       HEAVEN_COMPRESS: ${HEAVEN_COMPRESS:-true}
+      HEAVEN_CHUNKING: ${HEAVEN_CHUNKING:-none}
       HEAVEN_FOLLOW_SYMLINKS: ${HEAVEN_FOLLOW_SYMLINKS:-false}
       # Quand : « 02:30 », « 02:30,14:00 » ou un intervalle « 6h ».
       HEAVEN_SCHEDULE: ${HEAVEN_SCHEDULE:-02:30}

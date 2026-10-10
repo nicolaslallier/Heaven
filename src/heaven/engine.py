@@ -9,9 +9,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import chunking
 from .config import Config, RetentionPolicy
-from .errors import IntegrityError
-from .hashing import hash_file, hash_stream
+from .errors import IntegrityError, RepositoryError
+from .hashing import ALGORITHM, hash_file
 from .manifest import Snapshot, new_snapshot_id
 from .repository import Repository
 from .scanner import FileEntry, scan, source_roots
@@ -28,6 +29,9 @@ class BackupResult:
     files_stored: int = 0  # contenus réellement écrits (les autres étaient déjà là)
     bytes_scanned: int = 0
     bytes_stored: int = 0
+    files_cached: int = 0  # fichiers inchangés depuis le dernier instantané, non relus
+    blocks_total: int = 0
+    blocks_stored: int = 0
     skipped: list[tuple[str, str]] = field(default_factory=list)  # (chemin, raison)
 
     @property
@@ -63,12 +67,22 @@ class PruneResult:
     bytes_freed: int = 0
 
 
+# Marge sous laquelle une date de modification est jugée trop proche de l'instantané
+# précédent pour prouver que le fichier n'a pas changé depuis (même seconde, même mtime).
+_RACY_WINDOW = 2.0
+
+
 def backup(
     config: Config,
     tag: str | None = None,
     progress: ProgressCallback | None = None,
+    full: bool = False,
 ) -> BackupResult:
-    """Crée un instantané des sources de `config` dans son dépôt."""
+    """Crée un instantané des sources de `config` dans son dépôt.
+
+    Sauf avec `full`, un fichier dont la taille et la date de modification sont celles du
+    dernier instantané n'est pas relu : on en reprend l'empreinte, si ses objets existent.
+    """
     repository = Repository.initialize(config.repository)
     now = datetime.now(UTC)
     snapshot = Snapshot(
@@ -79,6 +93,8 @@ def backup(
         tag=tag,
     )
     result = BackupResult(snapshot=snapshot)
+    previous = None if full else _previous_snapshot(repository)
+    previous_entries = {item.path: item for item in previous.entries} if previous else {}
 
     for entry in scan(config.sources, config.excludes, config.follow_symlinks):
         if not entry.is_file:
@@ -86,14 +102,23 @@ def backup(
             continue
         source_path = _absolute_path(entry, config.sources)
         try:
-            digest = hash_file(source_path)
-            stored = repository.add_object(source_path, digest, compress=config.compress)
+            if previous is not None and _reuse_previous(
+                repository, previous, previous_entries.get(entry.path), entry, snapshot
+            ):
+                result.files_cached += 1
+                stored = 0
+            elif config.chunking == "cdc" and entry.size > chunking.THRESHOLD:
+                stored = _store_chunked(repository, source_path, entry, snapshot, config, result)
+            else:
+                digest = hash_file(source_path)
+                stored = repository.add_object(source_path, digest, compress=config.compress)
+                snapshot.hashes[entry.path] = digest
         except OSError as exc:
             # Un fichier illisible ne doit pas faire échouer toute la sauvegarde.
+            _forget(snapshot, entry.path)
             result.skipped.append((entry.path, str(exc)))
             continue
         snapshot.entries.append(entry)
-        snapshot.hashes[entry.path] = digest
         result.files_total += 1
         result.bytes_scanned += entry.size
         if stored:
@@ -104,6 +129,72 @@ def backup(
 
     repository.save_snapshot(snapshot)
     return result
+
+
+def _previous_snapshot(repository: Repository) -> Snapshot | None:
+    ids = repository.list_snapshot_ids()
+    if not ids:
+        return None
+    try:
+        return repository.load_snapshot(ids[-1])
+    except RepositoryError:
+        return None  # un instantané illisible prive du cache, pas de la sauvegarde
+
+
+def _reuse_previous(
+    repository: Repository,
+    previous: Snapshot,
+    before: FileEntry | None,
+    entry: FileEntry,
+    snapshot: Snapshot,
+) -> bool:
+    """Reprend l'empreinte du dernier instantané si le fichier n'a visiblement pas changé."""
+    digest = previous.hashes.get(entry.path)
+    if digest is None:
+        return False
+    if before is None or before.size != entry.size or before.mtime != entry.mtime:
+        return False
+    if entry.mtime + _RACY_WINDOW > previous.created.timestamp():
+        return False  # modifié peut-être après la lecture, sans que la date ne change
+    digests = previous.object_digests(entry.path)
+    if not all(repository.has_object(item) for item in digests):
+        return False
+    snapshot.hashes[entry.path] = digest
+    if entry.path in previous.blocks:
+        snapshot.blocks[entry.path] = list(previous.blocks[entry.path])
+    return True
+
+
+def _store_chunked(
+    repository: Repository,
+    source_path: Path,
+    entry: FileEntry,
+    snapshot: Snapshot,
+    config: Config,
+    result: BackupResult,
+) -> int:
+    """Découpe le fichier en blocs, stocke ceux qui manquent et note leur liste."""
+    whole = hashlib.new(ALGORITHM)
+    digests: list[str] = []
+    written = 0
+    with source_path.open("rb") as reader:
+        for block in chunking.iter_chunks(reader):
+            whole.update(block)
+            digest = hashlib.new(ALGORITHM, block).hexdigest()
+            digests.append(digest)
+            stored = repository.add_bytes(block, digest, compress=config.compress)
+            result.blocks_total += 1
+            if stored:
+                result.blocks_stored += 1
+                written += stored
+    snapshot.hashes[entry.path] = whole.hexdigest()
+    snapshot.blocks[entry.path] = digests
+    return written
+
+
+def _forget(snapshot: Snapshot, path: str) -> None:
+    snapshot.hashes.pop(path, None)
+    snapshot.blocks.pop(path, None)
 
 
 def restore(
@@ -138,14 +229,16 @@ def restore(
             result.symlinks_created += 1
             continue
 
-        digest = snapshot.hashes.get(entry.path)
-        if digest is None:
+        digests = snapshot.object_digests(entry.path)
+        if not digests:
             result.skipped.append((entry.path, "empreinte absente de l'instantané"))
             continue
         try:
-            with repository.open_object(digest) as reader, destination.open("wb") as writer:
-                while chunk := reader.read(1024 * 1024):
-                    writer.write(chunk)
+            with destination.open("wb") as writer:
+                for digest in digests:
+                    with repository.open_object(digest) as reader:
+                        while chunk := reader.read(1024 * 1024):
+                            writer.write(chunk)
         except OSError as exc:
             destination.unlink(missing_ok=True)
             raise IntegrityError(
@@ -184,27 +277,49 @@ def verify(
     verified: set[str] = set()
 
     for snapshot in snapshots:
-        for path, digest in snapshot.hashes.items():
-            if not repository.has_object(digest):
+        for path, whole in snapshot.hashes.items():
+            digests = snapshot.object_digests(path)
+            if not all(repository.has_object(digest) for digest in digests):
                 result.missing.append((snapshot.id, path))
                 continue
-            if digest in verified:
+            chunked = path in snapshot.blocks
+            if not chunked and digests[0] in verified:
                 continue
-            verified.add(digest)
-            result.objects_checked += 1
-            try:
-                with repository.open_object(digest) as reader:
-                    actual = hash_stream(reader)
-            except OSError:
-                # Objet illisible ou flux compressé tronqué : c'est une corruption.
-                result.corrupted.append((snapshot.id, path))
-                continue
-            if actual != digest:
+            if not _verify_file(repository, digests, whole, chunked, verified, result):
                 result.corrupted.append((snapshot.id, path))
             if progress:
                 progress(path)
 
     return result
+
+
+def _verify_file(
+    repository: Repository,
+    digests: list[str],
+    whole: str,
+    chunked: bool,
+    verified: set[str],
+    result: VerifyResult,
+) -> bool:
+    """Relit les objets d'un fichier ; pour un fichier découpé, contrôle aussi le tout."""
+    total = hashlib.new(ALGORITHM)
+    ok = True
+    for digest in digests:
+        try:
+            with repository.open_object(digest) as reader:
+                block = hashlib.new(ALGORITHM)
+                while chunk := reader.read(1024 * 1024):
+                    block.update(chunk)
+                    total.update(chunk)
+        except OSError:
+            # Objet illisible ou flux compressé tronqué : c'est une corruption.
+            return False
+        if digest not in verified:
+            verified.add(digest)
+            result.objects_checked += 1
+        if block.hexdigest() != digest:
+            ok = False
+    return ok and (not chunked or total.hexdigest() == whole)
 
 
 def read_file(repository_path: Path, snapshot_ref: str, path: str) -> bytes:
@@ -215,8 +330,11 @@ def read_file(repository_path: Path, snapshot_ref: str, path: str) -> bytes:
     if digest is None:
         raise IntegrityError(f"« {path} » n'est pas un fichier de l'instantané {snapshot.id}")
     try:
-        with repository.open_object(digest) as reader:
-            payload = reader.read()
+        parts: list[bytes] = []
+        for object_digest in snapshot.object_digests(path):
+            with repository.open_object(object_digest) as reader:
+                parts.append(reader.read())
+        payload = b"".join(parts)
     except OSError as exc:
         raise IntegrityError(
             f"contenu illisible pour « {path} » (instantané {snapshot.id}) : {exc}"
@@ -296,7 +414,7 @@ def select_snapshots_to_keep(
 
 
 def _orphan_estimate(repository: Repository, keep: Iterable[Snapshot]) -> tuple[int, int]:
-    referenced = {digest for snapshot in keep for digest in snapshot.hashes.values()}
+    referenced = set().union(*(snapshot.referenced_digests() for snapshot in keep))
     count = 0
     freed = 0
     for digest in repository.iter_objects():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import gzip
+import io
 import json
 import os
 import shutil
@@ -103,11 +104,20 @@ class Repository:
         """
         if self.has_object(digest):
             return 0
+        with source.open("rb") as reader:
+            return self._store(digest, reader, compress)
+
+    def add_bytes(self, payload: bytes, digest: str, compress: bool = True) -> int:
+        """Comme `add_object`, pour un contenu déjà en mémoire (un bloc)."""
+        if self.has_object(digest):
+            return 0
+        return self._store(digest, io.BytesIO(payload), compress)
+
+    def _store(self, digest: str, reader: BinaryIO, compress: bool) -> int:
         plain, compressed = self._object_paths(digest)
         target = compressed if compress else plain
         target.parent.mkdir(parents=True, exist_ok=True)
-        with source.open("rb") as reader:
-            _write_atomic_stream(target, reader, compress=compress)
+        _write_atomic_stream(target, reader, compress=compress)
         return target.stat().st_size
 
     @contextlib.contextmanager
@@ -198,7 +208,7 @@ class Repository:
         """Empreintes référencées par au moins un instantané."""
         referenced: set[str] = set()
         for snapshot in self.list_snapshots():
-            referenced.update(snapshot.hashes.values())
+            referenced.update(snapshot.referenced_digests())
         return referenced
 
 

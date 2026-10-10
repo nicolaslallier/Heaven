@@ -46,6 +46,7 @@ repository = "~/sauvegardes/heaven"
 excludes = ["*.tmp", "__pycache__", ".venv", "node_modules"]
 follow_symlinks = false
 compress = true
+chunking = "none"   # "cdc" : déduplication par blocs des gros fichiers
 
 [retention]
 keep_last = 7     # les 7 instantanés les plus récents
@@ -57,6 +58,19 @@ keep_monthly = 6
 Un motif d'exclusion sans `/` est comparé à chaque composant du chemin
 (`*.log` exclut aussi `var/app.log`) ; un motif avec `/` est comparé au
 chemin complet relatif à l'instantané (`data/build`).
+
+### Sauvegardes rapides et déduplication par blocs
+
+- **Fichiers inchangés** : si la taille et la date de modification d'un fichier sont celles du
+  dernier instantané (et que ses objets existent encore), Heaven ne le relit pas. Les fichiers
+  modifiés dans les 2 secondes précédant l'instantané précédent sont toujours relus.
+  `heaven backup --full` désactive ce raccourci ; `heaven verify` reste le contrôle d'intégrité.
+- **`chunking = "cdc"`** (ou `--chunking cdc`, `HEAVEN_CHUNKING=cdc`) : les fichiers de plus de
+  1 Mio sont découpés en blocs de 256 Kio à 4 Mio selon leur contenu. Modifier un détail d'une
+  image de VM ou d'une base de données ne réécrit que les blocs touchés. Le découpage est en
+  Python pur (~10 Mio/s) et ne s'applique qu'aux nouveaux contenus ; il est désactivé par défaut.
+  Les instantanés avec blocs sont au format 2, illisibles par une version de Heaven antérieure ;
+  sans blocs, ils restent au format 1.
 
 Une section `[retention]` vide, ou absente, conserve **tout** : `prune` ne
 supprime jamais d'instantané sans politique explicite.
