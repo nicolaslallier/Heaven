@@ -10,7 +10,15 @@ from datetime import timedelta
 from pathlib import Path
 
 from . import __version__, api, engine, notify, scheduler
-from .config import ENV_PREFIX, Config, RetentionPolicy, config_from_env, find_config, load_config
+from .config import (
+    CHUNKING_MODES,
+    ENV_PREFIX,
+    Config,
+    RetentionPolicy,
+    config_from_env,
+    find_config,
+    load_config,
+)
 from .errors import HeavenError
 from .repository import Repository
 
@@ -21,6 +29,7 @@ repository = "~/sauvegardes/heaven"
 excludes = ["*.tmp", "__pycache__", ".venv", "node_modules"]
 follow_symlinks = false
 compress = true
+chunking = "none"      # "cdc" : déduplication par blocs des gros fichiers
 
 [retention]
 keep_last = 7
@@ -69,6 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     backup.add_argument(
         "--no-compress", action="store_true", help="stocker les contenus sans compression"
+    )
+    backup.add_argument(
+        "--chunking",
+        choices=CHUNKING_MODES,
+        help="« cdc » découpe les gros fichiers en blocs dédupliqués",
+    )
+    backup.add_argument(
+        "--full",
+        action="store_true",
+        help="relire tous les fichiers, sans se fier au dernier instantané",
     )
 
     snapshots = subparsers.add_parser("snapshots", help="lister les instantanés")
@@ -214,6 +233,7 @@ def _cmd_backup(args: argparse.Namespace) -> int:
     result = engine.backup(
         config,
         tag=args.tag,
+        full=args.full,
         progress=(lambda path: print(f"  + {path}")) if verbose else None,
     )
     print(f"instantané {result.snapshot.id} créé dans {config.repository}")
@@ -222,6 +242,11 @@ def _cmd_backup(args: argparse.Namespace) -> int:
         f"{result.files_stored} nouveaux ({_human(result.bytes_stored)} écrits), "
         f"{result.files_reused} réutilisés"
     )
+    if result.files_cached or result.blocks_total:
+        print(
+            f"  {result.files_cached} fichiers inchangés non relus, "
+            f"{result.blocks_stored}/{result.blocks_total} blocs nouveaux"
+        )
     for path, reason in result.skipped:
         print(f"  ! ignoré {path} : {reason}", file=sys.stderr)
     return 0
@@ -363,6 +388,7 @@ def _resolve_config(args: argparse.Namespace) -> Config:
             repository=repository.expanduser(),
             excludes=list(args.excludes),
             compress=not getattr(args, "no_compress", False),
+            chunking=getattr(args, "chunking", None) or "none",
             # Sans configuration, on ne devine pas de politique : tout est conservé.
             retention=RetentionPolicy(keep_last=0),
         )
@@ -374,6 +400,8 @@ def _resolve_config(args: argparse.Namespace) -> Config:
         config.excludes = [*config.excludes, *args.excludes]
     if getattr(args, "no_compress", False):
         config.compress = False
+    if getattr(args, "chunking", None):
+        config.chunking = args.chunking
     return config
 
 

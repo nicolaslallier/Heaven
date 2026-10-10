@@ -14,6 +14,8 @@ from .errors import ConfigError
 
 DEFAULT_CONFIG_NAMES = ("heaven.toml", ".heaven.toml")
 
+CHUNKING_MODES = ("none", "cdc")
+
 # Préfixe des variables d'environnement reconnues en mode conteneur.
 ENV_PREFIX = "HEAVEN_"
 
@@ -40,9 +42,14 @@ class Config:
     excludes: list[str] = field(default_factory=list)
     follow_symlinks: bool = False
     compress: bool = True
+    chunking: str = "none"  # "cdc" : les gros fichiers sont découpés en blocs dédupliqués
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
 
     def __post_init__(self) -> None:
+        if self.chunking not in CHUNKING_MODES:
+            raise ConfigError(
+                f"chunking doit valoir {' ou '.join(CHUNKING_MODES)} (reçu : {self.chunking!r})"
+            )
         if not self.sources:
             raise ConfigError("au moins une source est requise")
 
@@ -107,6 +114,7 @@ def config_from_dict(raw: dict[str, Any], base_dir: Path) -> Config:
         excludes=excludes,
         follow_symlinks=bool(backup.get("follow_symlinks", False)),
         compress=bool(backup.get("compress", True)),
+        chunking=backup.get("chunking", "none"),
         retention=RetentionPolicy(**retention_raw),
     )
 
@@ -147,6 +155,7 @@ def config_from_env(env: Mapping[str, str] | None = None) -> Config | None:
         excludes=_split_list(values.get(f"{ENV_PREFIX}EXCLUDES")),
         follow_symlinks=_bool(values, f"{ENV_PREFIX}FOLLOW_SYMLINKS", False),
         compress=_bool(values, f"{ENV_PREFIX}COMPRESS", True),
+        chunking=(values.get(f"{ENV_PREFIX}CHUNKING") or "none").strip().lower(),
         retention=retention,
     )
 
