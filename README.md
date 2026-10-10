@@ -75,6 +75,19 @@ chemin complet relatif à l'instantané (`data/build`).
 Une section `[retention]` vide, ou absente, conserve **tout** : `prune` ne
 supprime jamais d'instantané sans politique explicite.
 
+> **Défauts différents selon la voie de configuration.** Dans le TOML, une clé
+> omise d'une section `[retention]` *non vide* prend son défaut : `keep_last = 7`
+> (les autres valent 0). Par variables d'environnement, une `HEAVEN_KEEP_*`
+> absente vaut toujours 0, et sans aucune d'elles tout est conservé. L'image
+> Docker fixe ses propres valeurs (`HEAVEN_KEEP_LAST=7`, etc.).
+
+### Sécurité de l'API et de l'interface web
+
+L'API (`/api/…`) n'a pas d'authentification et expose les **chemins, tailles et
+dates des fichiers sauvegardés**. Ne publiez l'interface que sur un réseau de
+confiance (par défaut : `127.0.0.1`). Pour l'ouvrir au LAN, ajoutez un mot de
+passe : voir « Protéger l'interface » dans `docs/portainer.md`.
+
 ## Commandes
 
 | Commande | Rôle |

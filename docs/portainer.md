@@ -66,7 +66,7 @@ toutes, puis en la redéployant à chaque image publiée. Section 6.
 | `HEAVEN_SCHEDULE` | `02:30` | `02:30`, `02:30,14:00` ou un intervalle `6h` / `90m` |
 | `HEAVEN_TAG` | `portainer` | étiquette portée par les instantanés |
 | `HEAVEN_VERIFY_EVERY` | `7` | vérification d'intégrité tous les N cycles (`0` : jamais) |
-| `HEAVEN_KEEP_LAST` / `_DAILY` / `_WEEKLY` / `_MONTHLY` | `7` / `7` / `4` / `6` | rétention |
+| `HEAVEN_KEEP_LAST` / `_DAILY` / `_WEEKLY` / `_MONTHLY` | `7` / `7` / `4` / `6` | rétention. Une variable absente vaut `0` (par défaut, avec un `heaven.toml`, `keep_last` vaudrait 7) ; sans aucune `HEAVEN_KEEP_*`, tout est conservé |
 | `HEAVEN_NO_INITIAL_BACKUP` | *(vide)* | `true` : attendre la première échéance au lieu de sauvegarder au démarrage |
 | `TZ` | `Europe/Paris` | fuseau dans lequel `HEAVEN_SCHEDULE` est interprété |
 | `HEAVEN_WEB_PORT` | `8080` | port **hôte** de l'interface web — `docker-compose.yml` seulement, la pile déployée ne publie rien |
@@ -141,6 +141,27 @@ quiconque atteint le vhost. C'est la raison pour laquelle la pile ne publie plus
 de port hôte — et, si la seule présence sur le LAN ne suffit pas comme barrière,
 le vhost d'Infra accepte la grille oauth2-proxy/Keycloak des autres applications
 (`nginx/conf.d/obsidian.conf` en est la recette).
+
+> **À savoir** : l'API expose les **chemins, tailles et dates de tous les fichiers
+> sauvegardés** (`/api/snapshots/<id>/files`). Traitez l'accès à l'interface comme
+> l'accès en lecture à l'arborescence des sources.
+
+#### Protéger l'interface par mot de passe (facultatif)
+
+Désactivé par défaut. `web/nginx.conf` inclut tout fichier
+`/etc/nginx/heaven-auth/*.conf` s'il existe ; sans ce dossier, rien ne change.
+
+1. Créer le fichier de mots de passe (sur l'hôte Docker) :
+   `docker run --rm httpd:alpine htpasswd -nbB utilisateur 'mot-de-passe' > /srv/heaven-auth/.htpasswd`
+2. Créer `/srv/heaven-auth/auth.conf` :
+   ```
+   auth_basic "Heaven";
+   auth_basic_user_file /etc/nginx/heaven-auth/.htpasswd;
+   ```
+3. Monter le dossier en lecture seule dans le service `web` :
+   `volumes: ["/srv/heaven-auth:/etc/nginx/heaven-auth:ro"]`, puis redéployer.
+
+Le mot de passe transite en clair derrière le vhost : gardez le TLS d'Infra devant.
 
 ## Tableau de bord et notifications
 

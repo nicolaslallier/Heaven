@@ -22,7 +22,13 @@ ENV_PREFIX = "HEAVEN_"
 
 @dataclass(slots=True)
 class RetentionPolicy:
-    """Nombre d'instantanés à conserver par période. 0 signifie « aucun de cette période »."""
+    """Nombre d'instantanés à conserver par période. 0 signifie « aucun de cette période ».
+
+    Attention, les défauts diffèrent selon la voie de configuration : dans un
+    fichier TOML, une clé omise de `[retention]` vaut `keep_last = 7` (défaut de
+    ce champ) ; par l'environnement (`config_from_env`), une variable absente
+    vaut 0, donc sans aucune `HEAVEN_KEEP_*` tout est conservé.
+    """
 
     keep_last: int = 7
     keep_daily: int = 0
@@ -132,6 +138,10 @@ def config_from_env(env: Mapping[str, str] | None = None) -> Config | None:
 
     C'est la voie utilisée dans un conteneur : le fichier `heaven.toml` devient
     facultatif et tout se règle avec les variables de la pile (Portainer, compose).
+
+    Rétention : une variable `HEAVEN_KEEP_*` absente vaut 0 ici (tout conserver
+    si aucune n'est définie), contrairement au TOML où `keep_last` vaut 7 quand
+    la clé est omise de `[retention]`. L'image Docker définit ses propres valeurs.
     """
     values = os.environ if env is None else env
     sources = _split_list(values.get(f"{ENV_PREFIX}SOURCES"))
