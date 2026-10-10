@@ -7,6 +7,7 @@ c'est lui qui alimente la sonde de santé Docker affichée par Portainer.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -16,15 +17,20 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import engine
 from .config import ENV_PREFIX, Config
 from .errors import ConfigError, HeavenError
 from .repository import Repository
 
+if TYPE_CHECKING:
+    from .notify import Notifier
+
 DEFAULT_STATE_PATH = Path("/var/lib/heaven/state.json")
 DEFAULT_SCHEDULE = "02:30"
-STATE_FORMAT = 1
+STATE_FORMAT = 2
+HISTORY_LIMIT = 200
 
 Logger = Callable[[str], None]
 
@@ -112,6 +118,9 @@ class CycleReport:
     snapshots_removed: int = 0
     bytes_freed: int = 0
     verified: bool = False
+    verify: dict[str, int] | None = None
+    repository_bytes: int | None = None
+    stats: dict[str, int] = field(default_factory=dict)  # hors fichier d'état
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
 
@@ -126,6 +135,8 @@ class CycleReport:
             "snapshots_removed": self.snapshots_removed,
             "bytes_freed": self.bytes_freed,
             "verified": self.verified,
+            "verify": self.verify,
+            "repository_bytes": self.repository_bytes,
             "error": self.error,
             "warnings": self.warnings,
         }
@@ -178,6 +189,11 @@ def run_cycle(
         if verify:
             checked = engine.verify(config.repository)
             report.verified = True
+            report.verify = {
+                "objects_checked": checked.objects_checked,
+                "missing": len(checked.missing),
+                "corrupted": len(checked.corrupted),
+            }
             if not checked.ok:
                 report.status = "error"
                 report.error = (
@@ -195,8 +211,31 @@ def run_cycle(
         report.error = str(error)
         emit(f"ERREUR cycle interrompu : {error}")
 
+    report.stats = repository_stats(config.repository)
+    report.repository_bytes = report.stats.get("bytes")
     report.finished_at = now().isoformat(timespec="seconds")
     return report
+
+
+def repository_stats(path: Path) -> dict[str, int]:
+    """Taille, objets et instantanés. Parcourt le dépôt : jamais à chaque requête."""
+    total = objects = 0
+    try:
+        repository = Repository.open(path)
+        for prefix in repository.objects_dir.iterdir():
+            if not prefix.is_dir():
+                continue
+            for item in prefix.iterdir():
+                with contextlib.suppress(OSError):
+                    total += item.stat().st_size
+                    objects += 1
+        return {
+            "bytes": total,
+            "objects": objects,
+            "snapshots": len(repository.list_snapshot_ids()),
+        }
+    except (HeavenError, OSError):
+        return {}
 
 
 def _check_sources(config: Config, report: CycleReport, emit: Logger) -> None:
@@ -228,6 +267,7 @@ def serve(
     log: Logger | None = None,
     max_cycles: int | None = None,
     now: Callable[[], datetime] = datetime.now,
+    notifier: Notifier | None = None,
 ) -> int:
     """Boucle de sauvegarde jusqu'à l'arrêt du conteneur (SIGTERM) ou `max_cycles`.
 
@@ -241,10 +281,11 @@ def serve(
     _prepare_repository(config, emit)
     cycles = 0
     last: CycleReport | None = None
+    memory = load_memory(state)
     pending = now() if initial_backup else schedule.next_run(now())
     if not initial_backup:
         emit(f"première sauvegarde prévue à {pending.isoformat(timespec='seconds')}")
-    _write_state(state, schedule, last, pending, emit)
+    _write_state(state, schedule, last, pending, memory, emit, notifier, now())
 
     while not stopping.is_set():
         delay = (pending - now()).total_seconds()
@@ -252,13 +293,17 @@ def serve(
             # `wait` rend la main immédiatement sur SIGTERM : pas d'arrêt brutal.
             if stopping.wait(timeout=min(delay, 60.0)):
                 break
+            # Rappels et retards se détectent entre deux cycles, pas seulement après.
+            if notifier is not None:
+                _write_state(state, schedule, last, pending, memory, emit, notifier, now())
             continue
 
         cycles += 1
         verify = bool(verify_every) and cycles % verify_every == 0
         last = run_cycle(config, tag=tag, verify=verify, log=emit, now=now)
         pending = schedule.next_run(now())
-        _write_state(state, schedule, last, pending, emit)
+        memory.record(last, last.stats)
+        _write_state(state, schedule, last, pending, memory, emit, notifier, now())
         emit(f"prochaine sauvegarde à {pending.isoformat(timespec='seconds')}")
         if max_cycles is not None and cycles >= max_cycles:
             break
@@ -304,20 +349,79 @@ def default_state_path() -> Path:
     return Path(configured).expanduser() if configured else DEFAULT_STATE_PATH
 
 
+@dataclass(slots=True)
+class Memory:
+    """Ce qui survit aux redémarrages : historique, dernière vérification, notifications."""
+
+    history: list[dict[str, object]] = field(default_factory=list)
+    last_run: dict[str, object] | None = None
+    last_verify: dict[str, object] | None = None
+    repository: dict[str, int] | None = None
+    notify: dict[str, object] = field(default_factory=dict)
+
+    def record(self, report: CycleReport, repository: dict[str, int] | None = None) -> None:
+        if repository:
+            self.repository = repository
+        entry = report.to_dict()
+        self.last_run = entry
+        self.history.insert(0, entry)
+        del self.history[HISTORY_LIMIT:]
+        if report.verify is not None:
+            self.last_verify = {
+                "at": report.finished_at,
+                "ok": not (report.verify["missing"] or report.verify["corrupted"]),
+                **report.verify,
+            }
+
+
+def load_memory(path: Path) -> Memory:
+    """Relit l'état précédent ; un `format: 1` (sans historique) est accepté tel quel."""
+    try:
+        raw = read_state(path)
+    except HeavenError:
+        return Memory()
+    history = raw.get("history")
+    notify = raw.get("notify")
+    last_run, last_verify, repository = (
+        raw.get("last_run"),
+        raw.get("last_verify"),
+        raw.get("repository"),
+    )
+    return Memory(
+        history=[run for run in history if isinstance(run, dict)][:HISTORY_LIMIT]
+        if isinstance(history, list)
+        else [],
+        last_run=last_run if isinstance(last_run, dict) else None,
+        last_verify=last_verify if isinstance(last_verify, dict) else None,
+        repository=repository if isinstance(repository, dict) else None,
+        notify=notify if isinstance(notify, dict) else {},
+    )
+
+
 def _write_state(
     path: Path,
     schedule: Schedule,
     last: CycleReport | None,
     next_run: datetime,
+    memory: Memory,
     log: Logger,
+    notifier: Notifier | None = None,
+    moment: datetime | None = None,
 ) -> None:
-    payload = {
+    shown = memory.last_run
+    payload: dict[str, object] = {
         "format": STATE_FORMAT,
         "schedule": str(schedule),
-        "status": last.status if last else "pending",
+        "status": str(shown["status"]) if shown else "pending",
         "next_run": next_run.isoformat(timespec="seconds"),
-        "last_run": last.to_dict() if last else None,
+        "last_run": shown,
+        "last_verify": memory.last_verify,
+        "repository": memory.repository,
+        "history": memory.history,
+        "notify": memory.notify,
     }
+    if notifier is not None:
+        notifier.check(payload, memory.notify, moment or datetime.now())
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(path.name + ".tmp")
