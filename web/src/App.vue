@@ -19,7 +19,8 @@ let timer = null
 
 async function get(path) {
   const response = await fetch(path)
-  return { code: response.status, body: await response.json() }
+  // Une page d'erreur nginx n'est pas du JSON : on garde le code HTTP.
+  return { code: response.status, body: await response.json().catch(() => null) }
 }
 
 async function refresh() {
@@ -30,19 +31,29 @@ async function refresh() {
       get('/api/runs?limit=30'),
       get('/api/snapshots'),
     ])
-    // 503 : le service démarre, ce n'est pas une panne.
-    health.value = h.code === 200 ? h.body : { status: 'unknown', summary: h.body.error }
+    if (h.code === 200 && h.body) {
+      // 200 avec healthy:false (sauvegarde en retard, dernier cycle en échec) : en défaut.
+      const late = h.body.healthy === false && h.body.status === 'ok'
+      health.value = late ? { ...h.body, status: 'error', summary: h.body.reason } : h.body
+    } else if (h.code === 503 && h.body?.error) {
+      // 503 : le service démarre, ce n'est pas une panne.
+      health.value = { status: 'unknown', summary: h.body.error }
+    } else {
+      // Autre réponse non OK (502, 504…) : Heaven est injoignable, on dit pourquoi.
+      throw new Error(`HTTP ${h.code}`)
+    }
     repository.value = r.code === 200 ? r.body : null
     runs.value = u.code === 200 ? u.body : []
     snapshots.value = s.code === 200 ? s.body : []
     stale.value = ''
-  } catch {
+  } catch (e) {
     // On garde les dernières données affichées et on le dit.
     const at = new Date().toLocaleTimeString('fr-CA', { timeStyle: 'short' })
+    const cause = e.message.startsWith('HTTP') ? e.message : 'réseau'
     stale.value = health.value
-      ? `Données antérieures à ${at} — Heaven injoignable`
-      : 'Heaven injoignable'
-    if (!health.value) health.value = { status: 'error', summary: stale.value }
+      ? `Données antérieures à ${at} — Heaven injoignable (${cause})`
+      : `Heaven injoignable (${cause})`
+    if (!health.value) health.value = { status: 'down' }
   }
 }
 
