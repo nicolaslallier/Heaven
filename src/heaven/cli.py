@@ -357,11 +357,12 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     ]
     repository = jobs[0].config.repository
     state_path = args.state_file or scheduler.default_state_path()
-    server = api.start(args.listen, repository, state_path) if args.listen else None
-    notifier = notify.Notifier(
-        notify.NotifyConfig.from_env(), repository, api.HEALTH_GRACE, scheduler.log_line
-    )
+    server = None
     try:
+        server = api.start(args.listen, repository, state_path) if args.listen else None
+        notifier = notify.Notifier(
+            notify.NotifyConfig.from_env(), repository, api.HEALTH_GRACE, scheduler.log_line
+        )
         return scheduler.serve_jobs(
             scheduled,
             initial_backup=not args.no_initial_backup,
@@ -373,6 +374,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     finally:
         if server is not None:
             server.shutdown()
+            server.server_close()
 
 
 def _resolve_jobs(args: argparse.Namespace) -> tuple[list[Job], bool]:

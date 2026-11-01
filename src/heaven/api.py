@@ -2,13 +2,16 @@
 
 Elle n'est jamais publiée telle quelle : nginx (web/nginx.conf) la relaie sous
 /api/ et sert l'interface Vue à côté. D'où l'absence d'authentification ici —
-le port n'est joignable que depuis le réseau de la pile.
+le port n'est joignable que depuis le réseau de la pile, et l'entrée nginx
+elle-même n'est publiée que sur la boucle locale (HEAVEN_WEB_BIND) ou derrière
+le reverse proxy d'Infra.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import socket
 import sys
 import threading
 import urllib.parse
@@ -93,6 +96,7 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
     host, separator, port = listen.rpartition(":")
     if not separator or not port.isdigit():
         raise ConfigError(f"adresse d'écoute invalide : {listen!r} (attendu : hôte:port)")
+    host = host.strip("[]")  # « [::]:8000 » : IPv6 entre crochets
 
     def history(state: dict[str, object]) -> list[dict[str, object]]:
         runs = state.get("history")
@@ -151,8 +155,20 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
         info["disk"] = status.disk_info(repository, history(state))
         return info
 
+    listing: list[tuple[int, list[dict[str, object]]]] = []  # au plus une entrée
+
     def snapshots() -> list[dict[str, object]]:
-        return [
+        repo = Repository.open(repository)
+        # Chaque écriture ou suppression de manifeste (atomique) change l'mtime du dossier.
+        # ponytail: horloge grossière = deux écritures dans le même tick peuvent passer
+        # inaperçues ; clé sur les mtimes des fichiers si cela se produit.
+        try:
+            stamp = repo.snapshots_dir.stat().st_mtime_ns
+        except OSError:
+            stamp = -1
+        if listing and listing[0][0] == stamp:
+            return listing[0][1]
+        result = [
             {
                 "id": snapshot.id,
                 "created_at": snapshot.created_at,
@@ -160,8 +176,10 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
                 "files": snapshot.file_count,
                 "size": snapshot.total_size,
             }
-            for snapshot in Repository.open(repository).list_snapshots()
+            for snapshot in repo.list_snapshots()
         ]
+        listing[:] = [(stamp, result)]
+        return result
 
     cache: dict[str, tuple[float, Snapshot]] = {}
     cache_lock = threading.Lock()
@@ -195,8 +213,16 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
     class Handler(BaseHTTPRequestHandler):
         # Un client lent ne garde pas un fil indéfiniment (le plafond ne joue qu'après lecture).
         timeout = 10
+        _head = False
 
         def do_GET(self) -> None:
+            self._serve(head=False)
+
+        def do_HEAD(self) -> None:  # noqa: N802
+            self._serve(head=True)
+
+        def _serve(self, head: bool) -> None:
+            self._head = head
             if not slots.acquire(blocking=False):
                 self._send(503, {"error": "serveur occupé, réessayez"})
                 return
@@ -234,9 +260,10 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
                 self._send(503, {"error": str(error)})
 
         def _refuse(self) -> None:
-            self._send(405, {"error": "API en lecture seule"}, allow="GET")
+            self._head = False
+            self._send(405, {"error": "API en lecture seule"}, allow="GET, HEAD")
 
-        do_POST = do_PUT = do_PATCH = do_DELETE = _refuse  # noqa: N815
+        do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = _refuse  # noqa: N815
 
         def _send(self, code: int, payload: object, allow: str | None = None) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -246,11 +273,18 @@ def start(listen: str, repository: Path, state_path: Path) -> ThreadingHTTPServe
             if allow:
                 self.send_header("Allow", allow)
             self.end_headers()
-            self.wfile.write(body)
+            if not self._head:
+                self.wfile.write(body)
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             pass  # nginx journalise déjà chaque requête ; les journaux restent ceux des cycles.
 
-    server = ThreadingHTTPServer((host, int(port)), Handler)
+    class Server(ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+
+    try:
+        server = Server((host, int(port)), Handler)
+    except (OSError, OverflowError) as error:  # port occupé, adresse inconnue (gaierror)…
+        raise HeavenError(f"impossible d'écouter sur {listen} : {error}") from error
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
