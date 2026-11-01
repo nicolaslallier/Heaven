@@ -2,7 +2,9 @@
 
 Elle n'est jamais publiée telle quelle : nginx (web/nginx.conf) la relaie sous
 /api/ et sert l'interface Vue à côté. D'où l'absence d'authentification ici —
-le port n'est joignable que depuis le réseau de la pile.
+le port n'est joignable que depuis le réseau de la pile, et l'entrée nginx
+elle-même n'est publiée que sur la boucle locale (HEAVEN_WEB_BIND) ou derrière
+le reverse proxy d'Infra.
 """
 
 from __future__ import annotations
