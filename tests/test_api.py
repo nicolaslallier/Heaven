@@ -149,9 +149,10 @@ def test_saturated_server_answers_503(
 
 
 def test_public_state_hides_notification_errors() -> None:
-    state = {"notify": {"last_result": "échec", "last_errors": ["refusé : n@example.net"]}}
+    notify = {"last_result": "échec", "last_errors": ["refusé : n@example.net"]}
+    state: dict[str, object] = {"notify": notify}
     assert api.public_state(state)["notify"] == {"last_result": "échec"}
-    assert "last_errors" in state["notify"]  # l'original reste intact
+    assert "last_errors" in notify  # l'original reste intact
 
 
 def _serve(config: Config, state: Path) -> tuple[api.ThreadingHTTPServer, str]:
